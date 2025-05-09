@@ -1,0 +1,93 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "request": "launch",
+      "name": "Client",
+      "presentation": {
+        "group": "Mod Development - Replication-AE2-Bridge",
+        "order": 0
+      },
+      "projectName": "Replication-AE2-Bridge",
+      "mainClass": "net.neoforged.devlaunch.Main",
+      "args": [
+        "@/home/unfamily/IdeaProjects/Replication-AE2-Bridge/build/moddev/clientRunProgramArgs.txt"
+      ],
+      "vmArgs": [
+        "@/home/unfamily/IdeaProjects/Replication-AE2-Bridge/build/moddev/clientRunVmArgs.txt",
+        "-Dfml.modFolders\u003drep_ae2_bridge%%/home/unfamily/IdeaProjects/Replication-AE2-Bridge/bin/main"
+      ],
+      "cwd": "${workspaceFolder}/run",
+      "env": {},
+      "console": "internalConsole",
+      "shortenCommandLine": "none"
+    },
+    {
+      "type": "java",
+      "request": "launch",
+      "name": "Data",
+      "presentation": {
+        "group": "Mod Development - Replication-AE2-Bridge",
+        "order": 1
+      },
+      "projectName": "Replication-AE2-Bridge",
+      "mainClass": "net.neoforged.devlaunch.Main",
+      "args": [
+        "@/home/unfamily/IdeaProjects/Replication-AE2-Bridge/build/moddev/dataRunProgramArgs.txt"
+      ],
+      "vmArgs": [
+        "@/home/unfamily/IdeaProjects/Replication-AE2-Bridge/build/moddev/dataRunVmArgs.txt",
+        "-Dfml.modFolders\u003drep_ae2_bridge%%/home/unfamily/IdeaProjects/Replication-AE2-Bridge/bin/main"
+      ],
+      "cwd": "${workspaceFolder}/run",
+      "env": {},
+      "console": "internalConsole",
+      "shortenCommandLine": "none"
+    },
+    {
+      "type": "java",
+      "request": "launch",
+      "name": "GameTestServer",
+      "presentation": {
+        "group": "Mod Development - Replication-AE2-Bridge",
+        "order": 2
+      },
+      "projectName": "Replication-AE2-Bridge",
+      "mainClass": "net.neoforged.devlaunch.Main",
+      "args": [
+        "@/home/unfamily/IdeaProjects/Replication-AE2-Bridge/build/moddev/gameTestServerRunProgramArgs.txt"
+      ],
+      "vmArgs": [
+        "@/home/unfamily/IdeaProjects/Replication-AE2-Bridge/build/moddev/gameTestServerRunVmArgs.txt",
+        "-Dfml.modFolders\u003drep_ae2_bridge%%/home/unfamily/IdeaProjects/Replication-AE2-Bridge/bin/main"
+      ],
+      "cwd": "${workspaceFolder}/run",
+      "env": {},
+      "console": "internalConsole",
+      "shortenCommandLine": "none"
+    },
+    {
+      "type": "java",
+      "request": "launch",
+      "name": "Server",
+      "presentation": {
+        "group": "Mod Development - Replication-AE2-Bridge",
+        "order": 3
+      },
+      "projectName": "Replication-AE2-Bridge",
+      "mainClass": "net.neoforged.devlaunch.Main",
+      "args": [
+        "@/home/unfamily/IdeaProjects/Replication-AE2-Bridge/build/moddev/serverRunProgramArgs.txt"
+      ],
+      "vmArgs": [
+        "@/home/unfamily/IdeaProjects/Replication-AE2-Bridge/build/moddev/serverRunVmArgs.txt",
+        "-Dfml.modFolders\u003drep_ae2_bridge%%/home/unfamily/IdeaProjects/Replication-AE2-Bridge/bin/main"
+      ],
+      "cwd": "${workspaceFolder}/run",
+      "env": {},
+      "console": "internalConsole",
+      "shortenCommandLine": "none"
+    }
+  ]
+}
