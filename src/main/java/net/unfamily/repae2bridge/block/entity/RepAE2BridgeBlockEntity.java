@@ -65,6 +65,10 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
+import java.util.Queue;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.LinkedList;
 
 /**
  * BlockEntity per il RepAE2Bridge che connette la rete AE2 con la rete di materia di Replication
@@ -73,6 +77,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         implements IInWorldGridNodeHost, ICraftingInventory, ICraftingProvider {
     
     private static final Logger LOGGER = LogUtils.getLogger();
+    
+    // Coda di pattern pendenti
+    private final Queue<IPatternDetails> pendingPatterns = new LinkedList<>();
+    private final Map<IPatternDetails, KeyCounter[]> pendingInputs = new HashMap<>();
     
     // Nodo AE2 per connessione alla rete
     private final IManagedGridNode mainNode = GridHelper.createManagedNode(this, new IGridNodeListener<RepAE2BridgeBlockEntity>() {
@@ -386,6 +394,16 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             if (networkManager != null && networkManager.getElement(pos) == null) {
                 LOGGER.info("Bridge: Tentativo di riconnessione alla rete Replication");
                 networkManager.addElement(createElement(level, pos));
+            }
+        }
+        
+        // Gestione della coda di pattern
+        if (!pendingPatterns.isEmpty() && !isBusy()) {
+            IPatternDetails pattern = pendingPatterns.poll();
+            KeyCounter[] inputs = pendingInputs.remove(pattern);
+            if (pattern != null && inputs != null) {
+                LOGGER.info("Bridge: Elaborazione pattern pendente dalla coda");
+                pushPattern(pattern, inputs);
             }
         }
         
@@ -735,9 +753,41 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                     if (pattern.getStack().getItem().equals(itemKey.getItem())) {
                                         // Avvia il crafting in Replication
                                         LOGGER.info("Bridge: Pattern trovato, avvio replicazione");
-                                        ReplicationTask task = new ReplicationTask(pattern.getStack(), 1, IReplicationTask.Mode.SINGLE, null);
-                                        network.getTaskManager().getPendingTasks().put(task.getUuid().toString(), task);
-                                        LOGGER.info("Bridge: Task di replicazione aggiunto alla rete");
+                                        
+                                        // Conta i replicatori disponibili
+                                        int replicatorCount = 0;
+                                        for (NetworkElement element : network.getMatterStacksHolders()) {
+                                            if (element.getLevel().getBlockEntity(element.getPos()) instanceof ReplicatorBlockEntity) {
+                                                replicatorCount++;
+                                            }
+                                        }
+                                        
+                                        // Dividi la quantità tra i replicatori disponibili
+                                        int amount = (int) output.amount();
+                                        int amountPerReplicator = (int) Math.ceil((double) amount / replicatorCount);
+                                        
+                                        LOGGER.info("Bridge: Distribuendo {} item tra {} replicatori ({} per replicatore)", 
+                                            amount, replicatorCount, amountPerReplicator);
+                                        
+                                        // Crea un task per ogni replicatore
+                                        int replicatorIndex = 0;
+                                        for (NetworkElement element : network.getMatterStacksHolders()) {
+                                            if (element.getLevel().getBlockEntity(element.getPos()) instanceof ReplicatorBlockEntity) {
+                                                int currentAmount = Math.min(amountPerReplicator, amount - (replicatorIndex * amountPerReplicator));
+                                                if (currentAmount > 0) {
+                                                    ReplicationTask task = new ReplicationTask(
+                                                        pattern.getStack(), 
+                                                        currentAmount, 
+                                                        IReplicationTask.Mode.MULTIPLE, 
+                                                        element.getPos() // Usa la posizione del replicatore come source
+                                                    );
+                                                    network.getTaskManager().getPendingTasks().put(task.getUuid().toString(), task);
+                                                    LOGGER.info("Bridge: Task di replicazione {} aggiunto per replicatore a {}", 
+                                                        replicatorIndex + 1, element.getPos());
+                                                }
+                                                replicatorIndex++;
+                                            }
+                                        }
                                         return true;
                                     }
                                 }
