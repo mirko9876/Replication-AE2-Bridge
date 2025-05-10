@@ -9,6 +9,9 @@ import appeng.api.networking.IInWorldGridNodeHost;
 import appeng.api.networking.IManagedGridNode;
 import appeng.api.networking.IGridNodeListener;
 import appeng.api.networking.crafting.ICraftingProvider;
+import appeng.api.networking.crafting.ICraftingPlan;
+import appeng.api.networking.crafting.ICraftingSimulationRequester;
+import appeng.api.networking.crafting.CalculationStrategy;
 import appeng.api.networking.security.IActionSource;
 import appeng.api.stacks.AEItemKey;
 import appeng.api.stacks.AEKey;
@@ -16,6 +19,7 @@ import appeng.api.stacks.GenericStack;
 import appeng.api.storage.AEKeyFilter;
 import appeng.api.util.AECableType;
 import appeng.crafting.inv.ICraftingInventory;
+import appeng.crafting.inv.ICraftingSimulationState;
 import appeng.crafting.pattern.AEProcessingPattern;
 import appeng.api.crafting.IPatternDetails;
 import appeng.api.stacks.KeyCounter;
@@ -24,7 +28,10 @@ import com.buuz135.replication.api.network.IMatterTanksSupplier;
 import com.buuz135.replication.block.tile.ReplicationMachine;
 import com.buuz135.replication.block.tile.ReplicatorBlockEntity;
 import com.buuz135.replication.calculation.ReplicationCalculation;
+import com.buuz135.replication.calculation.client.ClientReplicationCalculation;
 import com.buuz135.replication.network.MatterNetwork;
+import com.buuz135.replication.api.IMatterType;
+import com.buuz135.replication.calculation.MatterValue;
 import com.hrznstudio.titanium.block.BasicTileBlock;
 import com.hrznstudio.titanium.block_network.element.NetworkElement;
 import com.hrznstudio.titanium.block_network.NetworkManager;
@@ -69,6 +76,9 @@ import java.util.Queue;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.concurrent.Future;
+import java.util.concurrent.CompletableFuture;
+import java.lang.StringBuilder;
 
 /**
  * BlockEntity per il RepAE2Bridge che connette la rete AE2 con la rete di materia di Replication
@@ -866,5 +876,140 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     public int getPatternPriority() {
         // Priorità alta per assicurarci che i pattern di Replication vengano usati prima di altri
         return 100;
+    }
+
+    public Future<ICraftingPlan> beginCraftingCalculation(Level level, 
+            ICraftingSimulationRequester simRequester,
+            AEKey what, 
+            long amount, 
+            CalculationStrategy strategy) {
+        
+        if (what instanceof AEItemKey itemKey) {
+            LOGGER.info("Bridge: Calcolo crafting per {} x{}", itemKey.getItem().getDescriptionId(), amount);
+            MatterNetwork network = getNetwork();
+            if (network != null) {
+                // Cerca il pattern corrispondente in Replication
+                for (NetworkElement chipSupplier : network.getChipSuppliers()) {
+                    var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
+                    if (tile instanceof ChipStorageBlockEntity chipStorage) {
+                        for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
+                            if (pattern.getStack().getItem().equals(itemKey.getItem())) {
+                                // Verifica se c'è abbastanza matter per questa quantità
+                                var matterCompound = ClientReplicationCalculation.getMatterCompound(pattern.getStack());
+                                if (matterCompound != null) {
+                                    boolean hasEnoughMatter = true;
+                                    Map<IMatterType, Long> missingMatter = new HashMap<>();
+                                    
+                                    // Calcola la matter necessaria e disponibile
+                                    for (MatterValue matterValue : matterCompound.getValues().values()) {
+                                        var matterType = matterValue.getMatter();
+                                        var matterPerItem = matterValue.getAmount();
+                                        long totalMatterNeeded = (long)(matterPerItem * amount);
+                                        long available = network.calculateMatterAmount(matterType);
+                                        
+                                        LOGGER.info("Bridge: Matter necessaria per {}: {} {} ({} per item)", 
+                                            itemKey.getItem().getDescriptionId(),
+                                            totalMatterNeeded,
+                                            matterType.toString(),
+                                            matterPerItem);
+                                            
+                                        LOGGER.info("Bridge: Matter disponibile: {} {}", 
+                                            available,
+                                            matterType.toString());
+                                        
+                                        if (available < totalMatterNeeded) {
+                                            hasEnoughMatter = false;
+                                            missingMatter.put(matterType, totalMatterNeeded - available);
+                                        }
+                                    }
+                                    
+                                    if (!hasEnoughMatter) {
+                                        StringBuilder errorMsg = new StringBuilder();
+                                        errorMsg.append("Not enough matter available. Missing:\n");
+                                        for (Map.Entry<IMatterType, Long> entry : missingMatter.entrySet()) {
+                                            errorMsg.append("- ")
+                                                  .append(entry.getValue())
+                                                  .append(" ")
+                                                  .append(entry.getKey().toString())
+                                                  .append("\n");
+                                        }
+                                        
+                                        LOGGER.warn("Bridge: Richiesta di {} x{} rifiutata per mancanza di matter", 
+                                            itemKey.getItem().getDescriptionId(), amount);
+                                        LOGGER.warn("Bridge: Matter mancante:\n{}", errorMsg);
+                                        
+                                        return CompletableFuture.failedFuture(
+                                            new IllegalStateException(errorMsg.toString()));
+                                    }
+                                    
+                                    LOGGER.info("Bridge: Matter sufficiente per craftare {} x{}", 
+                                        itemKey.getItem().getDescriptionId(), amount);
+                                    
+                                    // Se c'è abbastanza matter, crea un piano di crafting
+                                    return CompletableFuture.completedFuture(new ICraftingPlan() {
+                                        @Override
+                                        public GenericStack finalOutput() {
+                                            return new GenericStack(AEItemKey.of(itemKey.getItem()), amount);
+                                        }
+
+                                        @Override
+                                        public long bytes() {
+                                            return 0; // Non usiamo bytes
+                                        }
+
+                                        @Override
+                                        public boolean simulation() {
+                                            return false; // Non è una simulazione
+                                        }
+
+                                        @Override
+                                        public boolean multiplePaths() {
+                                            return false; // Non ci sono percorsi multipli
+                                        }
+
+                                        @Override
+                                        public KeyCounter usedItems() {
+                                            return new KeyCounter(); // Non usiamo item
+                                        }
+
+                                        @Override
+                                        public KeyCounter emittedItems() {
+                                            return new KeyCounter(); // Non emettiamo item
+                                        }
+
+                                        @Override
+                                        public KeyCounter missingItems() {
+                                            return new KeyCounter(); // Non ci sono item mancanti
+                                        }
+
+                                        @Override
+                                        public Map<IPatternDetails, Long> patternTimes() {
+                                            return Map.of(); // Non usiamo pattern
+                                        }
+                                    });
+                                } else {
+                                    LOGGER.error("Bridge: Impossibile calcolare la matter necessaria per {}", 
+                                        itemKey.getItem().getDescriptionId());
+                                    return CompletableFuture.failedFuture(
+                                        new IllegalStateException("Cannot calculate required matter"));
+                                }
+                            }
+                        }
+                    }
+                }
+                LOGGER.warn("Bridge: Nessun pattern trovato per {}", itemKey.getItem().getDescriptionId());
+                return CompletableFuture.failedFuture(
+                    new IllegalStateException("No pattern found for this item"));
+            } else {
+                LOGGER.error("Bridge: Nessuna rete Replication trovata");
+                return CompletableFuture.failedFuture(
+                    new IllegalStateException("No Replication network found"));
+            }
+        }
+        
+        // Se arriviamo qui, non possiamo craftare questo item
+        LOGGER.error("Bridge: Tentativo di craftare un item non valido");
+        return CompletableFuture.failedFuture(
+            new IllegalStateException("Cannot craft this item"));
     }
 }
