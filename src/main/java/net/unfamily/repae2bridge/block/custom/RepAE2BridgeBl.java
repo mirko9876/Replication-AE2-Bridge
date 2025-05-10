@@ -90,7 +90,8 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
         if (!level.isClientSide()) {
             // Inizializza immediatamente la BlockEntity
             if (level.getBlockEntity(pos) instanceof RepAE2BridgeBlockEntity blockEntity) {
-                blockEntity.onReady();
+                // Inizializza il nodo AE2
+                blockEntity.handleNeighborChanged(pos);
             }
             
             // Notifica i blocchi vicini
