@@ -78,6 +78,9 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     
     private static final Logger LOGGER = LogUtils.getLogger();
     
+    // Costante per il numero di tick prima di processare le richieste accumulate
+    private static final int REQUEST_ACCUMULATION_TICKS = 100;
+    
     // Coda di pattern pendenti
     private final Queue<IPatternDetails> pendingPatterns = new LinkedList<>();
     private final Map<IPatternDetails, KeyCounter[]> pendingInputs = new HashMap<>();
@@ -147,6 +150,14 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     @Save
     private int matterOpediaSortingDirection;
     private TerminalPlayerTracker terminalPlayerTracker;
+
+    // Mappa per tenere traccia delle richieste per pattern
+    private final Map<ItemStack, Integer> patternRequests = new HashMap<>();
+    // Mappa per tenere traccia dei task attivi
+    private final Map<String, ItemStack> activeTasks = new HashMap<>();
+    // Contatori temporanei per le richieste di crafting
+    private final Map<ItemStack, Integer> requestCounters = new HashMap<>();
+    private int requestCounterTicks = 0;
 
     public RepAE2BridgeBlockEntity(BlockPos pos, BlockState blockState) {
         super((BasicTileBlock<RepAE2BridgeBlockEntity>) ModBlocks.REPAE2BRIDGE.get(), 
@@ -386,6 +397,55 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     public void serverTick(Level level, BlockPos pos, BlockState state, RepAE2BridgeBlockEntity blockEntity) {
         super.serverTick(level, pos, state, blockEntity);
         
+        // Gestione dei contatori temporanei
+        if (requestCounterTicks >= REQUEST_ACCUMULATION_TICKS) {
+            // Prima di resettare, crea i task per tutti gli item con richieste pendenti
+            MatterNetwork network = getNetwork();
+            if (network != null && !requestCounters.isEmpty()) {
+                LOGGER.info("Bridge: Creazione task per {} item con richieste pendenti", requestCounters.size());
+                
+                // Per ogni item con richieste pendenti
+                for (Map.Entry<ItemStack, Integer> entry : requestCounters.entrySet()) {
+                    ItemStack itemStack = entry.getKey();
+                    int count = entry.getValue();
+                    
+                    if (count > 0) {
+                        // Cerca il pattern corrispondente in Replication
+                        for (NetworkElement chipSupplier : network.getChipSuppliers()) {
+                            var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
+                            if (tile instanceof ChipStorageBlockEntity chipStorage) {
+                                for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
+                                    if (pattern.getStack().getItem().equals(itemStack.getItem())) {
+                                        LOGGER.info("Bridge: Creazione task per {} item di {} (richieste accumulate in {} tick)", 
+                                            count, itemStack.getItem().getDescriptionId(), REQUEST_ACCUMULATION_TICKS);
+                                        
+                                        // Crea un task di replicazione con la quantità totale
+                                        ReplicationTask task = new ReplicationTask(
+                                            pattern.getStack(), 
+                                            count, // Usa il numero totale di richieste accumulate
+                                            IReplicationTask.Mode.MULTIPLE, 
+                                            chipStorage.getBlockPos()
+                                        );
+                                        
+                                        // Aggiungi il task alla rete
+                                        network.getTaskManager().getPendingTasks().put(task.getUuid().toString(), task);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Ora possiamo resettare i contatori
+            requestCounters.clear();
+            requestCounterTicks = 0;
+            LOGGER.info("Bridge: Reset contatori richieste dopo {} tick", REQUEST_ACCUMULATION_TICKS);
+        } else {
+            requestCounterTicks++;
+        }
+        
         // Controlla la connessione alla rete di Replication
         if (getNetwork() == null) {
             LOGGER.warn("Bridge: Nessuna rete Replication trovata durante il tick");
@@ -485,7 +545,6 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                     LOGGER.info("Bridge: Aggiunta manuale dell'elemento alla rete");
                     matterNetwork.addElement(element);
                 }
-                LOGGER.info("Bridge: Connesso alla rete Replication {}", matterNetwork.getId());
                 return matterNetwork;
             } else {
                 LOGGER.warn("Bridge: Rete non è una MatterNetwork: {}", 
@@ -686,18 +745,15 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     // Implementazione di ICraftingProvider
     @Override
     public List<IPatternDetails> getAvailablePatterns() {
-        LOGGER.info("Bridge: AE2 richiede i pattern disponibili");
         List<IPatternDetails> patterns = new ArrayList<>();
         MatterNetwork network = getNetwork();
         if (network != null) {
-            LOGGER.info("Bridge: Cercando pattern disponibili nella rete Replication");
-            // Cerca tutti i pattern disponibili nei chip
+            // Per ogni chip storage nella rete
             for (NetworkElement chipSupplier : network.getChipSuppliers()) {
                 var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
                 if (tile instanceof ChipStorageBlockEntity chipStorage) {
-                    LOGGER.info("Bridge: Trovato ChipStorage a {}", chipStorage.getBlockPos());
+                    // Per ogni pattern nel chip storage
                     for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
-                        // Converti il pattern di Replication in un pattern AE2
                         if (!pattern.getStack().isEmpty() && pattern.getCompletion() == 1) {
                             try {
                                 // Crea un pattern di processing AE2
@@ -706,10 +762,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                 
                                 // Crea il pattern di processing
                                 List<GenericStack> inputs = new ArrayList<>();
-                                inputs.add(new GenericStack(AEItemKey.of(Items.STICK), 1)); // Input di test con uno stick
+                                inputs.add(new GenericStack(AEItemKey.of(Items.STRUCTURE_VOID), 1)); // Input è structure_void
                                 
                                 List<GenericStack> outputs = new ArrayList<>();
-                                outputs.add(new GenericStack(output, 1)); // Output è l'item da replicare
+                                outputs.add(new GenericStack(output, 1)); // Output è l'item replicato
                                 
                                 // Codifica il pattern
                                 AEProcessingPattern.encode(patternStack, inputs, outputs);
@@ -718,19 +774,16 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                 AEProcessingPattern aePattern = new AEProcessingPattern(AEItemKey.of(patternStack));
                                 
                                 patterns.add(aePattern);
-                                LOGGER.info("Bridge: Aggiunto pattern per {} in AE2", pattern.getStack().getItem().getDescriptionId());
+                                LOGGER.info("Bridge: Pattern aggiunto per {}", pattern.getStack().getItem().getDescriptionId());
                             } catch (Exception e) {
-                                // Ignora i pattern che non possono essere convertiti
                                 LOGGER.error("Bridge: Errore nella conversione del pattern: {}", e.getMessage());
                             }
                         }
                     }
                 }
             }
-            LOGGER.info("Bridge: Trovati {} pattern disponibili per AE2", patterns.size());
-        } else {
-            LOGGER.warn("Bridge: Nessuna rete Replication trovata per i pattern");
         }
+        LOGGER.info("Bridge: Totale pattern disponibili: {}", patterns.size());
         return patterns;
     }
 
@@ -751,43 +804,15 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                             if (tile instanceof ChipStorageBlockEntity chipStorage) {
                                 for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
                                     if (pattern.getStack().getItem().equals(itemKey.getItem())) {
-                                        // Avvia il crafting in Replication
-                                        LOGGER.info("Bridge: Pattern trovato, avvio replicazione");
+                                        // Incrementa il contatore per questo item
+                                        ItemStack itemStack = pattern.getStack();
+                                        int currentCount = requestCounters.getOrDefault(itemStack, 0);
+                                        requestCounters.put(itemStack, currentCount + 1);
                                         
-                                        // Conta i replicatori disponibili
-                                        int replicatorCount = 0;
-                                        for (NetworkElement element : network.getMatterStacksHolders()) {
-                                            if (element.getLevel().getBlockEntity(element.getPos()) instanceof ReplicatorBlockEntity) {
-                                                replicatorCount++;
-                                            }
-                                        }
+                                        LOGGER.info("Bridge: Pattern trovato per {}, richieste totali negli ultimi 10 tick: {}", 
+                                            itemKey.getItem().getDescriptionId(), currentCount + 1);
                                         
-                                        // Dividi la quantità tra i replicatori disponibili
-                                        int amount = (int) output.amount();
-                                        int amountPerReplicator = (int) Math.ceil((double) amount / replicatorCount);
-                                        
-                                        LOGGER.info("Bridge: Distribuendo {} item tra {} replicatori ({} per replicatore)", 
-                                            amount, replicatorCount, amountPerReplicator);
-                                        
-                                        // Crea un task per ogni replicatore
-                                        int replicatorIndex = 0;
-                                        for (NetworkElement element : network.getMatterStacksHolders()) {
-                                            if (element.getLevel().getBlockEntity(element.getPos()) instanceof ReplicatorBlockEntity) {
-                                                int currentAmount = Math.min(amountPerReplicator, amount - (replicatorIndex * amountPerReplicator));
-                                                if (currentAmount > 0) {
-                                                    ReplicationTask task = new ReplicationTask(
-                                                        pattern.getStack(), 
-                                                        currentAmount, 
-                                                        IReplicationTask.Mode.MULTIPLE, 
-                                                        element.getPos() // Usa la posizione del replicatore come source
-                                                    );
-                                                    network.getTaskManager().getPendingTasks().put(task.getUuid().toString(), task);
-                                                    LOGGER.info("Bridge: Task di replicazione {} aggiunto per replicatore a {}", 
-                                                        replicatorIndex + 1, element.getPos());
-                                                }
-                                                replicatorIndex++;
-                                            }
-                                        }
+                                        // Non creiamo subito il task, aspettiamo il prossimo reset
                                         return true;
                                     }
                                 }
@@ -807,9 +832,30 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     public boolean isBusy() {
         MatterNetwork network = getNetwork();
         if (network != null) {
+            // Rimuovi i task completati dalla mappa
+            network.getTaskManager().getPendingTasks().keySet().forEach(taskId -> {
+                if (!activeTasks.containsKey(taskId)) {
+                    // Il task è stato completato, rimuovilo
+                    ItemStack pattern = activeTasks.remove(taskId);
+                    if (pattern != null) {
+                        // Decrementa il contatore per questo pattern
+                        int currentCount = patternRequests.getOrDefault(pattern, 0);
+                        if (currentCount > 0) {
+                            patternRequests.put(pattern, currentCount - 1);
+                            LOGGER.info("Bridge: Task completato per {}, rimangono {} richieste attive", 
+                                pattern.getItem().getDescriptionId(), currentCount - 1);
+                        }
+                    }
+                }
+            });
+
             boolean busy = !network.getTaskManager().getPendingTasks().isEmpty();
             if (busy) {
                 LOGGER.info("Bridge: Occupato con {} task pendenti", network.getTaskManager().getPendingTasks().size());
+                // Log delle richieste per pattern
+                patternRequests.forEach((pattern, count) -> 
+                    LOGGER.info("Bridge: Pattern {} ha {} richieste attive", 
+                        pattern.getItem().getDescriptionId(), count));
             }
             return busy;
         }
