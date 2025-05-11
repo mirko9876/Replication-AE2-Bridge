@@ -23,6 +23,9 @@ import appeng.crafting.inv.ICraftingSimulationState;
 import appeng.crafting.pattern.AEProcessingPattern;
 import appeng.api.crafting.IPatternDetails;
 import appeng.api.stacks.KeyCounter;
+import appeng.api.storage.IStorageProvider;
+import appeng.api.storage.IStorageMounts;
+import appeng.api.storage.MEStorage;
 import com.buuz135.replication.api.network.IMatterTanksConsumer;
 import com.buuz135.replication.api.network.IMatterTanksSupplier;
 import com.buuz135.replication.block.tile.ReplicationMachine;
@@ -64,6 +67,22 @@ import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 import appeng.core.definitions.AEItems;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.Item;
+import net.unfamily.repae2bridge.item.ModItems;
+import com.buuz135.replication.ReplicationRegistry;
+import appeng.api.networking.GridFlags;
+import appeng.api.networking.GridHelper;
+import appeng.api.networking.IGrid;
+import appeng.api.networking.IGridNode;
+import appeng.api.networking.IGridNodeListener;
+import appeng.api.networking.IInWorldGridNodeHost;
+import appeng.api.networking.IManagedGridNode;
+import appeng.api.networking.crafting.CalculationStrategy;
+import appeng.api.networking.crafting.ICraftingPlan;
+import appeng.api.networking.crafting.ICraftingProvider;
+import appeng.api.networking.crafting.ICraftingSimulationRequester;
+import appeng.api.networking.security.IActionSource;
+import appeng.api.networking.storage.IStorageService;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -84,7 +103,7 @@ import java.lang.StringBuilder;
  * BlockEntity per il RepAE2Bridge che connette la rete AE2 con la rete di materia di Replication
  */
 public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBlockEntity> 
-        implements IInWorldGridNodeHost, ICraftingInventory, ICraftingProvider {
+        implements IInWorldGridNodeHost, ICraftingInventory, ICraftingProvider, IStorageProvider {
     
     private static final Logger LOGGER = LogUtils.getLogger();
     
@@ -116,6 +135,9 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                 if (state == IGridNodeListener.State.POWER && node.isActive()) {
                     LOGGER.info("Bridge: Nodo AE2 attivo, richiesta aggiornamento pattern");
                     ICraftingProvider.requestUpdate(mainNode);
+                    
+                    // Richiede anche un aggiornamento dello storage per mostrare gli item di materia
+                    IStorageProvider.requestUpdate(mainNode);
                 }
             }
         }
@@ -132,6 +154,9 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
                 // Forza un aggiornamento dei pattern quando la griglia cambia
                 ICraftingProvider.requestUpdate(mainNode);
+                
+                // Richiede anche un aggiornamento dello storage per mostrare gli item di materia
+                IStorageProvider.requestUpdate(mainNode);
             }
         }
     })
@@ -140,6 +165,7 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             .setFlags(GridFlags.REQUIRE_CHANNEL)
             .setExposedOnSides(EnumSet.allOf(Direction.class))
             .addService(ICraftingProvider.class, this)
+            .addService(IStorageProvider.class, this)
             .setTagName("main");
     
     // Flag per tenere traccia se il nodo è stato creato
@@ -169,6 +195,16 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     private final Map<ItemStack, Integer> requestCounters = new HashMap<>();
     private int requestCounterTicks = 0;
 
+    // Timer per l'aggiornamento periodico dei pattern
+    private int patternUpdateTicks = 0;
+    private static final int PATTERN_UPDATE_INTERVAL = 100; // Aggiorna ogni 5 secondi (100 tick)
+    
+
+    // Cache dei warning di materia insufficiente per evitare ripetizioni
+    private Map<String, Long> lastMatterWarnings = new HashMap<>();
+    // Tempo minimo tra warning consecutivi per lo stesso item (in tick)
+    private static final int WARNING_COOLDOWN = 600; // 30 secondi
+
     public RepAE2BridgeBlockEntity(BlockPos pos, BlockState blockState) {
         super((BasicTileBlock<RepAE2BridgeBlockEntity>) ModBlocks.REPAE2BRIDGE.get(), 
               ModBlockEntities.REPAE2BRIDGE_BE.get(), 
@@ -192,11 +228,36 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         return this;
     }
 
+    /**
+     * Controlla se è presente un altro bridge nella direzione specificata
+     * @param direction La direzione da controllare
+     * @return true se c'è un altro bridge nella direzione specificata
+     */
+    private boolean hasBridgeInDirection(Direction direction) {
+        if (level != null) {
+            BlockPos neighborPos = worldPosition.relative(direction);
+            return level.getBlockEntity(neighborPos) instanceof RepAE2BridgeBlockEntity;
+        }
+        return false;
+    }
+
     @Override
     protected NetworkElement createElement(Level level, BlockPos pos) {
-        // Inizialmente usiamo l'implementazione base, ma stampiamo un log
+        // Creiamo un elemento di rete personalizzato che non si connette ad altri bridge
         LOGGER.info("Bridge: Creazione elemento di rete a {}", pos);
-        return new DefaultMatterNetworkElement(level, pos);
+        return new DefaultMatterNetworkElement(level, pos) {
+            @Override
+            public boolean canConnectFrom(Direction direction) {
+                // Controlla se nella direzione specificata c'è un altro bridge
+                BlockPos neighborPos = pos.relative(direction);
+                if (level.getBlockEntity(neighborPos) instanceof RepAE2BridgeBlockEntity) {
+                    LOGGER.info("Bridge: Evitata connessione con altro bridge a {}", neighborPos);
+                    return false;
+                }
+                // Altrimenti usiamo il comportamento predefinito
+                return super.canConnectFrom(direction);
+            }
+        };
     }
 
     /**
@@ -297,6 +358,20 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
      */
     public void handleNeighborChanged(BlockPos fromPos) {
         if (level != null && !level.isClientSide()) {
+            // Se il blocco che è cambiato è un altro bridge, ignoriamo l'aggiornamento
+            Direction directionToNeighbor = null;
+            for (Direction dir : Direction.values()) {
+                if (worldPosition.relative(dir).equals(fromPos)) {
+                    directionToNeighbor = dir;
+                    break;
+                }
+            }
+            
+            if (directionToNeighbor != null && level.getBlockEntity(fromPos) instanceof RepAE2BridgeBlockEntity) {
+                LOGGER.info("Bridge: Ignorato aggiornamento da altro bridge a {}", fromPos);
+                return;
+            }
+            
             // Controlla se c'è un controller AE2 nella rete
             boolean hasAE2Connection = hasAE2NetworkConnection();
             
@@ -407,12 +482,63 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     public void serverTick(Level level, BlockPos pos, BlockState state, RepAE2BridgeBlockEntity blockEntity) {
         super.serverTick(level, pos, state, blockEntity);
         
+        // Aggiornamento periodico dei pattern - rimuovi controllo per matterUpdatesBlocked
+        if (patternUpdateTicks >= PATTERN_UPDATE_INTERVAL) {
+            if (isActive() && getNetwork() != null) {
+                LOGGER.info("Bridge: Aggiornamento periodico dei pattern");
+                ICraftingProvider.requestUpdate(mainNode);
+                
+                // Aggiorna anche lo storage per aggiornare le quantità di materia visualizzate
+                IStorageProvider.requestUpdate(mainNode);
+            }
+            patternUpdateTicks = 0;
+        } else {
+            patternUpdateTicks++;
+        }
+        
+        // Controlla periodicamente se ci sono item di materia virtuale nella rete AE2
+        // che non dovrebbero essere lì e li rimuove
+        if (level.getGameTime() % 40 == 0 && isActive() && mainNode.getNode() != null) {
+            IGrid grid = mainNode.getNode().getGrid();
+            if (grid != null) {
+                IStorageService storageService = grid.getStorageService();
+                if (storageService != null) {
+                    // Ottieni tutti gli item nella rete
+                    KeyCounter items = storageService.getInventory().getAvailableStacks();
+                    
+                    // Verifica se ci sono item di materia virtuale
+                    items.forEach(entry -> {
+                        AEKey key = entry.getKey();
+                        if (key instanceof AEItemKey itemKey && isVirtualMatterItem(itemKey.getItem())) {
+                            long amount = entry.getLongValue();
+                            if (amount > 0) {
+                                LOGGER.info("Bridge: Rilevati {} item virtuali di materia {} nella rete. Rimozione in corso...",
+                                    amount, itemKey.getItem().getDescriptionId());
+                                
+                                // Estrai tutta la materia virtuale per rimuoverla
+                                storageService.getInventory().extract(itemKey, amount, Actionable.MODULATE, null);
+                                
+                                LOGGER.info("Bridge: Rimossi {} item virtuali di materia {} dalla rete",
+                                    amount, itemKey.getItem().getDescriptionId());
+                            }
+                        }
+                    });
+                }
+            }
+        }
+        
         // Gestione dei contatori temporanei
         if (requestCounterTicks >= REQUEST_ACCUMULATION_TICKS) {
             // Prima di resettare, crea i task per tutti gli item con richieste pendenti
             MatterNetwork network = getNetwork();
             if (network != null && !requestCounters.isEmpty()) {
                 LOGGER.info("Bridge: Creazione task per {} item con richieste pendenti", requestCounters.size());
+                
+                // Calcola il totale dei task che verranno creati
+                int totalItems = 0;
+                for (int count : requestCounters.values()) {
+                    totalItems += count;
+                }
                 
                 // Per ogni item con richieste pendenti
                 for (Map.Entry<ItemStack, Integer> entry : requestCounters.entrySet()) {
@@ -438,7 +564,47 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                         );
                                         
                                         // Aggiungi il task alla rete
-                                        network.getTaskManager().getPendingTasks().put(task.getUuid().toString(), task);
+                                        String taskId = task.getUuid().toString();
+                                        network.getTaskManager().getPendingTasks().put(taskId, task);
+                                        
+                                        // Aggiungi alla mappa dei task attivi
+                                        activeTasks.put(taskId, itemStack);
+                                        
+                                        // Aggiorna il contatore delle richieste per pattern
+                                        int currentPatternRequests = patternRequests.getOrDefault(itemStack, 0);
+                                        patternRequests.put(itemStack, currentPatternRequests + count);
+                                        
+                                        LOGGER.info("Bridge: Task creato con ID {}, richieste totali per questo pattern: {}", 
+                                            taskId, currentPatternRequests + count);
+                                        
+                                        // Estrai la materia necessaria
+                                        var matterCompound = ClientReplicationCalculation.getMatterCompound(pattern.getStack());
+                                        if (matterCompound != null) {
+                                            // Estrai ogni tipo di materia dalla rete
+                                            for (MatterValue matterValue : matterCompound.getValues().values()) {
+                                                var matterType = matterValue.getMatter();
+                                                var matterAmount = (long)Math.ceil(matterValue.getAmount()) * count;
+                                                
+                                                // Trova l'item virtuale corrispondente
+                                                Item matterItem = getItemForMatterType(matterType);
+                                                if (matterItem != null) {
+                                                    AEItemKey matterKey = AEItemKey.of(matterItem);
+                                                    
+                                                    // Nota: ora estraiamo la materia reale per la replicazione
+                                                    LOGGER.info("Bridge: Estrazione di {} materia reale {} per replicazione", 
+                                                        matterAmount, matterType.getName());
+                                                    
+                                                    // Estrai la materia dalla rete Replication
+                                                    // Diminuisci la materia disponibile dalla rete
+                                                    // In Replication non esiste un metodo diretto per estrarre materia dalla rete
+                                                    // quindi qui simuliamo l'estrazione rimuovendo il conteggio dalla visualizzazione virtuale
+                                                    
+                                                    // Consumiamo sempre la materia virtuale per evitare blocchi del pattern
+                                                    long extracted = extract(matterKey, matterAmount, Actionable.MODULATE);
+                                                    LOGGER.info("Bridge: Consumata materia virtuale {}: {}", matterType.getName(), extracted);
+                                                }
+                                            }
+                                        }
                                         break;
                                     }
                                 }
@@ -635,6 +801,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             this.getNetwork().getTaskManager().getPendingTasks().values().forEach(task -> {
                 this.getNetwork().sendTaskSyncPacket(serverPlayer, task);
             });
+            
+            // Aggiorna anche i pattern in AE2
+            ICraftingProvider.requestUpdate(mainNode);
+            LOGGER.info("Bridge: Aggiornamento pattern AE2 da onActivated");
         }
         return ItemInteractionResult.SUCCESS;
     }
@@ -711,18 +881,25 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     @Override
     public long extract(AEKey what, long amount, Actionable mode) {
-        if (what instanceof AEItemKey itemKey) {
-            MatterNetwork network = getNetwork();
-            if (network != null) {
-                // Verifica se l'item può essere estratto (già craftato)
-                for (NetworkElement chipSupplier : network.getChipSuppliers()) {
-                    var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
-                    if (tile instanceof ChipStorageBlockEntity chipStorage) {
-                        for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
-                            if (pattern.getStack().getItem().equals(itemKey.getItem())) {
-                                // L'item può essere estratto
-                                return amount;
-                            }
+        if (what instanceof AEItemKey) {
+            AEItemKey itemKey = (AEItemKey) what;
+            Item item = itemKey.getItem();
+            if (isVirtualMatterItem(item)) {
+                // Per la matter virtuale, ora permettiamo l'estrazione
+                // il matterItemsStorage gestirà la logica
+                return matterItemsStorage.extract(what, amount, mode, null);
+            }
+        }
+        MatterNetwork network = getNetwork();
+        if (network != null && what instanceof AEItemKey) {
+            AEItemKey itemKey = (AEItemKey) what;
+            for (NetworkElement chipSupplier : network.getChipSuppliers()) {
+                var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
+                if (tile instanceof ChipStorageBlockEntity chipStorage) {
+                    for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
+                        if (pattern.getStack().getItem().equals(itemKey.getItem())) {
+                            // L'item può essere estratto
+                            return amount;
                         }
                     }
                 }
@@ -770,21 +947,41 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                 ItemStack patternStack = new ItemStack(AEItems.BLANK_PATTERN.asItem());
                                 AEItemKey output = AEItemKey.of(pattern.getStack().getItem());
                                 
-                                // Crea il pattern di processing
-                                List<GenericStack> inputs = new ArrayList<>();
-                                inputs.add(new GenericStack(AEItemKey.of(Items.STRUCTURE_VOID), 1)); // Input è structure_void
-                                
-                                List<GenericStack> outputs = new ArrayList<>();
-                                outputs.add(new GenericStack(output, 1)); // Output è l'item replicato
-                                
-                                // Codifica il pattern
-                                AEProcessingPattern.encode(patternStack, inputs, outputs);
-                                
-                                // Crea il pattern AE2
-                                AEProcessingPattern aePattern = new AEProcessingPattern(AEItemKey.of(patternStack));
-                                
-                                patterns.add(aePattern);
-                                LOGGER.info("Bridge: Pattern aggiunto per {}", pattern.getStack().getItem().getDescriptionId());
+                                // Ottieni il composto di materia per questo pattern
+                                var matterCompound = ClientReplicationCalculation.getMatterCompound(pattern.getStack());
+                                if (matterCompound != null) {
+                                    // Crea il pattern di processing con i requisiti reali di materia
+                                    List<GenericStack> inputs = new ArrayList<>();
+                                    
+                                    // Aggiungi ogni tipo di materia richiesto come input
+                                    for (MatterValue matterValue : matterCompound.getValues().values()) {
+                                        var matterType = matterValue.getMatter();
+                                        var matterAmount = (long)Math.ceil(matterValue.getAmount());
+                                        
+                                        // Trova l'item virtuale corrispondente al tipo di materia
+                                        Item matterItem = getItemForMatterType(matterType);
+                                        if (matterItem != null) {
+                                            // Aggiungi la materia come input
+                                            inputs.add(new GenericStack(AEItemKey.of(matterItem), matterAmount));
+                                            LOGGER.info("Bridge: Pattern per {} richiede {} di {} matter", 
+                                                pattern.getStack().getItem().getDescriptionId(), 
+                                                matterAmount,
+                                                matterType.getName());
+                                        }
+                                    }
+                                    
+                                    List<GenericStack> outputs = new ArrayList<>();
+                                    outputs.add(new GenericStack(output, 1)); // Output è l'item replicato
+                                    
+                                    // Codifica il pattern
+                                    AEProcessingPattern.encode(patternStack, inputs, outputs);
+                                    
+                                    // Crea il pattern AE2
+                                    AEProcessingPattern aePattern = new AEProcessingPattern(AEItemKey.of(patternStack));
+                                    
+                                    patterns.add(aePattern);
+                                    LOGGER.info("Bridge: Pattern aggiunto per {}", pattern.getStack().getItem().getDescriptionId());
+                                }
                             } catch (Exception e) {
                                 LOGGER.error("Bridge: Errore nella conversione del pattern: {}", e.getMessage());
                             }
@@ -799,39 +996,119 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     @Override
     public boolean pushPattern(IPatternDetails patternDetails, KeyCounter[] inputHolder) {
-        if (patternDetails instanceof AEProcessingPattern aePattern) {
-            // Prendi il primo output del pattern (l'item da replicare)
-            List<GenericStack> outputs = aePattern.getOutputs();
-            if (!outputs.isEmpty()) {
-                GenericStack output = outputs.get(0);
+        MatterNetwork network = getNetwork();
+        
+        if (network != null && isActive() && patternDetails != null) {
+            // Verifica se il pattern produce un item che possiamo replicare
+            if (patternDetails.getOutputs().size() == 1) {
+                var output = patternDetails.getOutputs().iterator().next();
                 if (output.what() instanceof AEItemKey itemKey) {
-                    LOGGER.info("Bridge: Tentativo di avviare replicazione per {}", itemKey.getItem().getDescriptionId());
-                    MatterNetwork network = getNetwork();
-                    if (network != null) {
-                        // Cerca il pattern corrispondente in Replication
-                        for (NetworkElement chipSupplier : network.getChipSuppliers()) {
-                            var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
-                            if (tile instanceof ChipStorageBlockEntity chipStorage) {
-                                for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
-                                    if (pattern.getStack().getItem().equals(itemKey.getItem())) {
-                                        // Incrementa il contatore per questo item
-                                        ItemStack itemStack = pattern.getStack();
-                                        int currentCount = requestCounters.getOrDefault(itemStack, 0);
-                                        requestCounters.put(itemStack, currentCount + 1);
+                    LOGGER.info("Bridge: Richiesta di pushPattern per {}", itemKey.getItem().getDescriptionId());
+                    
+                    // Se siamo occupati, metti in coda il pattern
+                    if (isBusy()) {
+                        LOGGER.info("Bridge: Bridge occupato, mettendo in coda il pattern");
+                        pendingPatterns.add(patternDetails);
+                        pendingInputs.put(patternDetails, inputHolder);
+                        return true;
+                    }
+                    
+                    // Cerca il pattern in tutti i chip storage della rete
+                    for (NetworkElement chipSupplier : network.getChipSuppliers()) {
+                        var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
+                        if (tile instanceof ChipStorageBlockEntity chipStorage) {
+                            for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
+                                if (pattern.getStack().getItem().equals(itemKey.getItem())) {
+                                    // Controlla se abbiamo abbastanza matter virtuale negli input
+                                    if (inputHolder != null && inputHolder.length > 0) {
+                                        KeyCounter inputs = inputHolder[0];
+                                        boolean hasAllMatter = true;
                                         
-                                        LOGGER.info("Bridge: Pattern trovato per {}, richieste totali negli ultimi 10 tick: {}", 
-                                            itemKey.getItem().getDescriptionId(), currentCount + 1);
-                                        
-                                        // Non creiamo subito il task, aspettiamo il prossimo reset
-                                        return true;
+                                        // Ottieni il composto di materia per questo pattern
+                                        var matterCompound = ClientReplicationCalculation.getMatterCompound(pattern.getStack());
+                                        if (matterCompound != null) {
+                                            // Verifica direttamente sulla rete se c'è abbastanza materia disponibile
+                                            // invece di controllare gli inputs virtuali di AE2
+                                            for (MatterValue matterValue : matterCompound.getValues().values()) {
+                                                var matterType = matterValue.getMatter();
+                                                var matterAmount = (long)Math.ceil(matterValue.getAmount());
+                                                
+                                                // Verifica quanta materia è disponibile nella rete
+                                                long available = network.calculateMatterAmount(matterType);
+                                                
+                                                LOGGER.info("Bridge: Verifica disponibilità per {}: {} {} (richiesto: {}, disponibile: {})", 
+                                                    itemKey.getItem().getDescriptionId(),
+                                                    matterType.getName(),
+                                                    matterAmount,
+                                                    matterAmount,
+                                                    available);
+                                                
+                                                if (available < matterAmount) {
+                                                    hasAllMatter = false;
+                                                    
+                                                    // Crea una chiave unica per questo warning
+                                                    String warningKey = itemKey.getItem().getDescriptionId() + ":" + matterType.getName();
+                                                    long currentTime = level.getGameTime();
+                                                    
+                                                    // Controlla se abbiamo già mostrato questo warning di recente
+                                                    if (!lastMatterWarnings.containsKey(warningKey) || 
+                                                            currentTime - lastMatterWarnings.get(warningKey) > WARNING_COOLDOWN) {
+                                                        // Mostra il warning e aggiorna il timestamp
+                                                        LOGGER.warn("Bridge: Matter {} insufficiente per {}. Ha: {}, Necessita: {}", 
+                                                            matterType.getName(),
+                                                            itemKey.getItem().getDescriptionId(),
+                                                            available,
+                                                            matterAmount);
+                                                        lastMatterWarnings.put(warningKey, currentTime);
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            // Estrai ogni tipo di materia dalla rete se abbiamo tutto
+                                            if (hasAllMatter) {
+                                                for (MatterValue matterValue : matterCompound.getValues().values()) {
+                                                    var matterType = matterValue.getMatter();
+                                                    var matterAmount = (long)Math.ceil(matterValue.getAmount());
+                                                    
+                                                    // Trova l'item virtuale corrispondente
+                                                    Item matterItem = getItemForMatterType(matterType);
+                                                    if (matterItem != null) {
+                                                        AEItemKey matterKey = AEItemKey.of(matterItem);
+                                                        
+                                                        // Nota: ora estraiamo la materia reale per la replicazione
+                                                        LOGGER.info("Bridge: Estrazione di {} materia reale {} per replicazione", 
+                                                            matterAmount, matterType.getName());
+                                                        
+                                                        long extracted = extract(matterKey, matterAmount, Actionable.MODULATE);
+                                                        LOGGER.info("Bridge: Consumata materia virtuale {}: {}", matterType.getName(), extracted);
+                                                    }
+                                                }
+                                            } else {
+                                                LOGGER.warn("Bridge: Matter insufficiente nella rete per craftare {}", 
+                                                    itemKey.getItem().getDescriptionId());
+                                                return false;
+                                            }
+                                        }
                                     }
+                                    
+                                    // Incrementa il contatore per questo item
+                                    ItemStack itemStack = pattern.getStack();
+                                    int currentCount = requestCounters.getOrDefault(itemStack, 0);
+                                    requestCounters.put(itemStack, currentCount + 1);
+                                    
+                                    LOGGER.info("Bridge: Pattern trovato per {}, richieste totali negli ultimi 10 tick: {}", 
+                                        itemKey.getItem().getDescriptionId(), currentCount + 1);
+                                    
+                                    // Non creiamo subito il task, aspettiamo il prossimo reset
+                                    return true;
                                 }
                             }
                         }
-                        LOGGER.warn("Bridge: Pattern non trovato nella rete Replication");
-                    } else {
-                        LOGGER.warn("Bridge: Nessuna rete Replication trovata");
                     }
+                    LOGGER.warn("Bridge: Pattern non trovato nella rete Replication");
+                } else {
+                    LOGGER.warn("Bridge: Nessuna rete Replication trovata");
                 }
             }
         }
@@ -860,6 +1137,16 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             });
 
             boolean busy = !network.getTaskManager().getPendingTasks().isEmpty();
+            
+            // Se non siamo occupati ma gli aggiornamenti sono ancora bloccati, sblocchiamoli
+            if (!busy && requestCounters.isEmpty()) {
+                // Rimuoviamo questo messaggio di log che non ha più senso
+                // LOGGER.info("Bridge: Aggiornamenti di materia sbloccati da isBusy");
+                
+                // Forza un aggiornamento dello storage per mostrare le nuove quantità
+                IStorageProvider.requestUpdate(mainNode);
+            }
+            
             if (busy) {
                 LOGGER.info("Bridge: Occupato con {} task pendenti", network.getTaskManager().getPendingTasks().size());
                 // Log delle richieste per pattern
@@ -920,6 +1207,21 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                         if (available < totalMatterNeeded) {
                                             hasEnoughMatter = false;
                                             missingMatter.put(matterType, totalMatterNeeded - available);
+                                            
+                                            // Crea una chiave unica per questo warning
+                                            String warningKey = itemKey.getItem().getDescriptionId() + ":" + matterType.getName();
+                                            long currentTime = level.getGameTime();
+                                            
+                                            // Controlla se abbiamo già mostrato questo warning di recente
+                                            if (!lastMatterWarnings.containsKey(warningKey) || 
+                                                    currentTime - lastMatterWarnings.get(warningKey) > WARNING_COOLDOWN) {
+                                                LOGGER.warn("Bridge: Matter {} insufficiente per {}. Necessario: {}, Disponibile: {}", 
+                                                    matterType.getName(), 
+                                                    itemKey.getItem().getDescriptionId(), 
+                                                    totalMatterNeeded, 
+                                                    available);
+                                                lastMatterWarnings.put(warningKey, currentTime);
+                                            }
                                         }
                                     }
                                     
@@ -1011,5 +1313,216 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         LOGGER.error("Bridge: Tentativo di craftare un item non valido");
         return CompletableFuture.failedFuture(
             new IllegalStateException("Cannot craft this item"));
+    }
+
+    // Mappa IMatterType -> Item virtuale
+    private Item getItemForMatterType(IMatterType type) {
+        String name = type.getName();
+        if (name.equalsIgnoreCase("earth")) return ModItems.EARTH_MATTER.get();
+        if (name.equalsIgnoreCase("nether")) return ModItems.NETHER_MATTER.get();
+        if (name.equalsIgnoreCase("organic")) return ModItems.ORGANIC_MATTER.get();
+        if (name.equalsIgnoreCase("ender")) return ModItems.ENDER_MATTER.get();
+        if (name.equalsIgnoreCase("metallic")) return ModItems.METALLIC_MATTER.get();
+        if (name.equalsIgnoreCase("precious")) return ModItems.PRECIOUS_MATTER.get();
+        if (name.equalsIgnoreCase("living")) return ModItems.LIVING_MATTER.get();
+        if (name.equalsIgnoreCase("quantum")) return ModItems.QUANTUM_MATTER.get();
+        return null;
+    }
+
+    // Utility per riconoscere gli item virtuali di matter
+    private boolean isVirtualMatterItem(Item item) {
+        return item == ModItems.EARTH_MATTER.get()
+            || item == ModItems.NETHER_MATTER.get()
+            || item == ModItems.ORGANIC_MATTER.get()
+            || item == ModItems.ENDER_MATTER.get()
+            || item == ModItems.METALLIC_MATTER.get()
+            || item == ModItems.PRECIOUS_MATTER.get()
+            || item == ModItems.LIVING_MATTER.get()
+            || item == ModItems.QUANTUM_MATTER.get();
+    }
+
+    // Metodo per mostrare gli item virtuali nel terminale AE2
+    public void getAvailableItems(KeyCounter items) {
+        System.out.println("DEBUG: Chiamato getAvailableItems");
+        MatterNetwork network = getNetwork();
+        if (network != null) {
+            // Recupera tutti i tipi di matter registrati
+            List<IMatterType> matterTypes = List.of(
+                ReplicationRegistry.Matter.EMPTY.get(),
+                ReplicationRegistry.Matter.METALLIC.get(),
+                ReplicationRegistry.Matter.EARTH.get(),
+                ReplicationRegistry.Matter.NETHER.get(),
+                ReplicationRegistry.Matter.ORGANIC.get(),
+                ReplicationRegistry.Matter.ENDER.get(),
+                ReplicationRegistry.Matter.PRECIOUS.get(),
+                ReplicationRegistry.Matter.QUANTUM.get(),
+                ReplicationRegistry.Matter.LIVING.get()
+            );
+            
+            for (IMatterType matterType : matterTypes) {
+                long amount = network.calculateMatterAmount(matterType);
+                System.out.println("DEBUG: " + matterType.getName() + " -> " + amount);
+                if (amount > 0) {
+                    Item item = getItemForMatterType(matterType);
+                    if (item != null) {
+                        System.out.println("DEBUG: Aggiungo item virtuale " + item + " quantità " + amount);
+                        items.add(AEItemKey.of(item), amount);
+                    } else {
+                        System.out.println("DEBUG: Nessun item associato a " + matterType.getName());
+                    }
+                }
+            }
+        } else {
+            System.out.println("DEBUG: Nessuna rete Replication trovata");
+        }
+    }
+
+    @Override
+    public void mountInventories(IStorageMounts storageMounts) {
+        // Montiamo lo storage virtuale con priorità alta per essere sempre visibile
+        storageMounts.mount(matterItemsStorage, 100);
+    }
+
+    /**
+     * Implementazione di MEStorage per esporre gli item virtuali di materia
+     */
+    private class MatterItemsStorage implements MEStorage {
+        @Override
+        public long insert(AEKey what, long amount, Actionable mode, IActionSource source) {
+            // Non permettiamo inserimenti in questo storage
+            return 0;
+        }
+
+        @Override
+        public long extract(AEKey what, long amount, Actionable mode, IActionSource source) {
+            // Consentiamo l'estrazione, ma solo per operazioni di autocrafting
+            if (what instanceof AEItemKey itemKey && isVirtualMatterItem(itemKey.getItem())) {
+                // Ottieni la rete
+                MatterNetwork network = getNetwork();
+                if (network != null) {
+                    // Trova il tipo di materia corrispondente
+                    IMatterType matterType = getMatterTypeForItem(itemKey.getItem());
+                    if (matterType != null) {
+                        // Verifica quanta materia è disponibile nella rete
+                        long available = network.calculateMatterAmount(matterType);
+                        
+                        // Log per debugging della disponibilità
+                        if (available < amount) {
+                            LOGGER.info("Bridge: Disponibilità insufficiente di {} - Richiesto: {}, Disponibile: {}",
+                                matterType.getName(), amount, available);
+                        }
+                        
+                        // Decidi quanto estrarre (il minimo tra la richiesta e il disponibile)
+                        long toExtract = Math.min(amount, available);
+                        
+                        // Se è una simulazione, restituisci solo la quantità che potremmo estrarre
+                        if (mode == Actionable.SIMULATE) {
+                            LOGGER.debug("Bridge: Simulazione estrazione di {} {}", toExtract, matterType.getName());
+                            return toExtract;
+                        }
+                        
+                        // Verifica se la fonte è una export bus o interface automatica (che vogliamo bloccare)
+                        if (source != null && isAutomationPart(source)) {
+                            // Blocca le richieste da export bus
+                            LOGGER.warn("Bridge: Blocco estrazione da bus di esportazione di {} {}", 
+                                amount, matterType.getName());
+                            return 0;
+                        }
+                        
+                        // Permette tutte le altre operazioni
+                        if (toExtract > 0) {
+                            LOGGER.info("Bridge: Estrazione virtuale di {} {}", 
+                                toExtract, matterType.getName());
+                            return toExtract;
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
+
+        /**
+         * Verifica se la fonte è una parte di automazione (export bus, interface automatica, ecc.)
+         * @param source La fonte della richiesta
+         * @return true se è una parte di automazione che vogliamo bloccare
+         */
+        private boolean isAutomationPart(IActionSource source) {
+            // Se c'è una macchina, verifica se è una parte di automazione
+            if (source.machine().isPresent()) {
+                var machine = source.machine().get();
+                String machineClass = machine.getClass().getName();
+                
+                // Blocca specificamente le parti di automazione
+                return machineClass.contains("appeng.parts.autom");
+            }
+            
+            // Non è una export bus
+            return false;
+        }
+        
+        @Override
+        public net.minecraft.network.chat.Component getDescription() {
+            return net.minecraft.network.chat.Component.literal("Replication Matter Storage");
+        }
+
+        @Override
+        public void getAvailableStacks(KeyCounter out) {
+            MatterNetwork network = getNetwork();
+            if (network != null) {
+                // Recupera tutti i tipi di matter registrati
+                List<IMatterType> matterTypes = List.of(
+                    ReplicationRegistry.Matter.EMPTY.get(),
+                    ReplicationRegistry.Matter.METALLIC.get(),
+                    ReplicationRegistry.Matter.EARTH.get(),
+                    ReplicationRegistry.Matter.NETHER.get(),
+                    ReplicationRegistry.Matter.ORGANIC.get(),
+                    ReplicationRegistry.Matter.ENDER.get(),
+                    ReplicationRegistry.Matter.PRECIOUS.get(),
+                    ReplicationRegistry.Matter.QUANTUM.get(),
+                    ReplicationRegistry.Matter.LIVING.get()
+                );
+                
+                for (IMatterType matterType : matterTypes) {
+                    long amount = network.calculateMatterAmount(matterType);
+                    LOGGER.info("Bridge: Materia {} disponibile: {}", matterType.getName(), amount);
+                    if (amount > 0) {
+                        Item item = getItemForMatterType(matterType);
+                        if (item != null) {
+                            LOGGER.info("Bridge: Aggiungo item virtuale {} quantità {}", item, amount);
+                            out.add(AEItemKey.of(item), amount);
+                        } else {
+                            LOGGER.info("Bridge: Nessun item associato a {}", matterType.getName());
+                        }
+                    }
+                }
+            } else {
+                LOGGER.warn("Bridge: Nessuna rete Replication trovata");
+            }
+        }
+    }
+    
+    // Istanza dello storage virtuale degli item di materia
+    private final MatterItemsStorage matterItemsStorage = new MatterItemsStorage();
+
+    // Metodo per reagire agli eventi della rete Replication
+    public void handleReplicationNetworkEvent() {
+        if (isActive() && level != null && !level.isClientSide()) {
+            // Forza un aggiornamento dei pattern
+            LOGGER.info("Bridge: Aggiornamento pattern in risposta a evento Replication");
+            ICraftingProvider.requestUpdate(mainNode);
+        }
+    }
+
+    // Mappa Item virtuale -> IMatterType
+    private IMatterType getMatterTypeForItem(Item item) {
+        if (item == ModItems.EARTH_MATTER.get()) return ReplicationRegistry.Matter.EARTH.get();
+        if (item == ModItems.NETHER_MATTER.get()) return ReplicationRegistry.Matter.NETHER.get();
+        if (item == ModItems.ORGANIC_MATTER.get()) return ReplicationRegistry.Matter.ORGANIC.get();
+        if (item == ModItems.ENDER_MATTER.get()) return ReplicationRegistry.Matter.ENDER.get();
+        if (item == ModItems.METALLIC_MATTER.get()) return ReplicationRegistry.Matter.METALLIC.get();
+        if (item == ModItems.PRECIOUS_MATTER.get()) return ReplicationRegistry.Matter.PRECIOUS.get();
+        if (item == ModItems.LIVING_MATTER.get()) return ReplicationRegistry.Matter.LIVING.get();
+        if (item == ModItems.QUANTUM_MATTER.get()) return ReplicationRegistry.Matter.QUANTUM.get();
+        return null;
     }
 }
