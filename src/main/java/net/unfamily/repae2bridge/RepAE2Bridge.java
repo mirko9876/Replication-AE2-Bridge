@@ -24,11 +24,19 @@ import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.unfamily.repae2bridge.item.ModItems;
 import net.neoforged.neoforge.capabilities.BlockCapability;
 import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
 import appeng.api.networking.IInWorldGridNodeHost;
 import com.buuz135.replication.block.MatterPipeBlock;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.chunk.LevelChunk;
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import java.util.function.BiConsumer;
 
 // The value here should match an entry in the META-INF/neoforge.mods.toml file
 @Mod(RepAE2Bridge.MOD_ID)
@@ -135,6 +143,17 @@ public class RepAE2Bridge
     public void onServerStarting(ServerStartingEvent event)
     {
         // LOGGER.info("RepAE2Bridge: Server starting");
+    }
+    
+    @SubscribeEvent
+    public void onServerStopping(ServerStoppingEvent event)
+    {
+        LOGGER.info("RepAE2Bridge: Server stopping, notifying bridges to prepare for unload");
+        
+        // Set the static flag in the BlockEntity class
+        RepAE2BridgeBlockEntity.setWorldUnloading(true);
+        
+        LOGGER.info("RepAE2Bridge: All bridges notified of world unload");
     }
 
     // You can use EventBusSubscriber to automatically register all static methods in the class annotated with @SubscribeEvent

@@ -88,6 +88,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
@@ -98,6 +99,7 @@ import java.util.LinkedList;
 import java.util.concurrent.Future;
 import java.util.concurrent.CompletableFuture;
 import java.lang.StringBuilder;
+import java.util.Objects;
 
 /**
  * BlockEntity for the RepAE2Bridge that connects the AE2 network with the Replication matter network
@@ -109,6 +111,15 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     
     // Constant for the number of ticks before processing accumulated requests
     private static final int REQUEST_ACCUMULATION_TICKS = 100;
+
+    // Constant for initialization delay in ticks (3 seconds = 60 ticks)
+    private static final int INITIALIZATION_DELAY = 60;
+    
+    // Variable to track if the networks have been initialized
+    private byte initialized = 0;
+    
+    // Counter for initialization ticks
+    private int initializationTicks = 0;
     
     // Queue of pending patterns
     private final Queue<IPatternDetails> pendingPatterns = new LinkedList<>();
@@ -187,29 +198,56 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     private int matterOpediaSortingDirection;
     private TerminalPlayerTracker terminalPlayerTracker;
 
+    // Unique identifier for this block
+    @Save
+    private UUID blockId;
+
     // Map to track requests for patterns
-    private final Map<ItemStack, Integer> patternRequests = new HashMap<>();
-    // Map to track active tasks
-    private final Map<String, ItemStack> activeTasks = new HashMap<>();
+    private final Map<UUID, Map<ItemStack, Integer>> patternRequests = new HashMap<>();
+    // Map to track active tasks with source information
+    private final Map<UUID, Map<String, TaskSourceInfo>> activeTasks = new HashMap<>();
+    // Map to track requests by source block
+    private final Map<UUID, Map<ItemStack, Integer>> patternRequestsBySource = new HashMap<>();
     // Temporary counters for crafting requests
-    private final Map<ItemStack, Integer> requestCounters = new HashMap<>();
+    private final Map<UUID, Map<ItemWithSourceId, Integer>> requestCounters = new HashMap<>();
     private int requestCounterTicks = 0;
 
     // Timer for periodic pattern updates
     private int patternUpdateTicks = 0;
     private static final int PATTERN_UPDATE_INTERVAL = 100; // Update every 5 seconds (100 ticks)
-    
 
     // Cache of matter insufficient warnings to avoid repetitions
     private Map<String, Long> lastMatterWarnings = new HashMap<>();
     // Minimum time between consecutive warnings for the same item (in ticks)
     private static final int WARNING_COOLDOWN = 600; // 30 seconds
 
+    // Static flag to track world unloading state
+    private static boolean worldUnloading = false;
+    
+    /**
+     * Sets the world unloading state
+     * Called from the mod main class when the server is stopping
+     */
+    public static void setWorldUnloading(boolean unloading) {
+        worldUnloading = unloading;
+        LOGGER.info("Bridge: World unloading state set to {}", unloading);
+    }
+    
+    /**
+     * Checks if the world is currently unloading
+     */
+    public static boolean isWorldUnloading() {
+        return worldUnloading;
+    }
+
     public RepAE2BridgeBlockEntity(BlockPos pos, BlockState blockState) {
         super((BasicTileBlock<RepAE2BridgeBlockEntity>) ModBlocks.REPAE2BRIDGE.get(), 
               ModBlockEntities.REPAE2BRIDGE_BE.get(), 
               pos, 
               blockState);
+              
+        // Generate a unique identifier for this block
+        this.blockId = UUID.randomUUID();
               
         // Initialize terminal component
         this.terminalPlayerTracker = new TerminalPlayerTracker();
@@ -260,7 +298,7 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     public void onLoad() {
         // First initialize the Replication network (as done by the base class)
         super.onLoad();
-        // LOGGER.info("Bridge: onLoad called at {}", worldPosition);
+        //LOGGER.info("Bridge: onLoad called at {}", worldPosition);
         
         // Initialize the AE2 node if it hasn't been done
         if (!nodeCreated && level != null && !level.isClientSide()) {
@@ -438,6 +476,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         tag.putBoolean("nodeCreated", nodeCreated);
         // Save the reconnection flag
         tag.putBoolean("shouldReconnect", shouldReconnect);
+        // Save the block's unique identifier
+        if (blockId != null) {
+            tag.putUUID("blockId", blockId);
+        }
     }
 
     @Override
@@ -452,6 +494,13 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         // Load the reconnection flag
         if (tag.contains("shouldReconnect")) {
             shouldReconnect = tag.getBoolean("shouldReconnect");
+        }
+        // Load the block's unique identifier
+        if (tag.contains("blockId")) {
+            blockId = tag.getUUID("blockId");
+        } else {
+            // If no ID exists, generate a new one
+            blockId = UUID.randomUUID();
         }
     }
 
@@ -474,6 +523,32 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     @Override
     public void serverTick(Level level, BlockPos pos, BlockState state, RepAE2BridgeBlockEntity blockEntity) {
         super.serverTick(level, pos, state, blockEntity);
+        
+        //LOGGER.warn("Bridge: initialization: {}", initialized);
+        
+        // Check if the world is unloading
+        if (worldUnloading && initialized == 1) {
+            // Call onWorldUnload if the world is unloading and we're initialized
+            onWorldUnload();
+            return;
+        }
+        
+        // Delayed initialization handling
+        if (initialized == 0) {
+            initializationTicks++;
+            if (initializationTicks >= INITIALIZATION_DELAY) {
+                initialized = 1;
+                // LOGGER.info("Bridge: Initialization completed after 60 ticks");
+                
+                // Force update of patterns and connections after initialization
+                if (!level.isClientSide()) {
+                    forceNeighborUpdates();
+                    updateConnectedState();
+                    ICraftingProvider.requestUpdate(mainNode);
+                    IStorageProvider.requestUpdate(mainNode);
+                }
+            }
+        }
         
         // Periodic pattern updates - remove check for matterUpdatesBlocked
         if (patternUpdateTicks >= PATTERN_UPDATE_INTERVAL) {
@@ -529,76 +604,98 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                 
                 // Calculate the total number of tasks that will be created
                 int totalItems = 0;
-                for (int count : requestCounters.values()) {
-                    totalItems += count;
+                for (UUID sourceId : requestCounters.keySet()) {
+                    Map<ItemWithSourceId, Integer> sourceCounters = requestCounters.get(sourceId);
+                    for (int count : sourceCounters.values()) {
+                        totalItems += count;
+                    }
                 }
                 
-                // For each item with pending requests
-                for (Map.Entry<ItemStack, Integer> entry : requestCounters.entrySet()) {
-                    ItemStack itemStack = entry.getKey();
-                    int count = entry.getValue();
+                // For each source block
+                for (UUID sourceId : requestCounters.keySet()) {
+                    Map<ItemWithSourceId, Integer> sourceCounters = requestCounters.get(sourceId);
                     
-                    if (count > 0) {
-                        // Search for the corresponding pattern in Replication
-                        for (NetworkElement chipSupplier : network.getChipSuppliers()) {
-                            var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
-                            if (tile instanceof ChipStorageBlockEntity chipStorage) {
-                                for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
-                                    if (pattern.getStack().getItem().equals(itemStack.getItem())) {
-                                        // LOGGER.info("Bridge: Creating task for {} item of {} (requests accumulated in {} ticks)", 
-                                        //    count, itemStack.getItem().getDescriptionId(), REQUEST_ACCUMULATION_TICKS);
-                                        
-                                        // Create a replication task with the total quantity
-                                        ReplicationTask task = new ReplicationTask(
-                                            pattern.getStack(), 
-                                            count, // Use the total number of accumulated requests
-                                            IReplicationTask.Mode.MULTIPLE, 
-                                            chipStorage.getBlockPos()
-                                        );
-                                        
-                                        // Add the task to the network
-                                        String taskId = task.getUuid().toString();
-                                        network.getTaskManager().getPendingTasks().put(taskId, task);
-                                        
-                                        // Add to the active tasks map
-                                        activeTasks.put(taskId, itemStack);
-                                        
-                                        // Update the request counter for the pattern
-                                        int currentPatternRequests = patternRequests.getOrDefault(itemStack, 0);
-                                        patternRequests.put(itemStack, currentPatternRequests + count);
-                                        
-                                        // LOGGER.info("Bridge: Task created with ID {}, total requests for this pattern: {}", 
-                                        //    taskId, currentPatternRequests + count);
-                                        
-                                        // Extract the necessary matter
-                                        var matterCompound = ClientReplicationCalculation.getMatterCompound(pattern.getStack());
-                                        if (matterCompound != null) {
-                                            // Extract each type of matter from the network
-                                            for (MatterValue matterValue : matterCompound.getValues().values()) {
-                                                var matterType = matterValue.getMatter();
-                                                var matterAmount = (long)Math.ceil(matterValue.getAmount()) * count;
-                                                
-                                                // Find the corresponding virtual item
-                                                Item matterItem = getItemForMatterType(matterType);
-                                                if (matterItem != null) {
-                                                    AEItemKey matterKey = AEItemKey.of(matterItem);
+                    // For each item with pending requests from this source
+                    for (Map.Entry<ItemWithSourceId, Integer> entry : sourceCounters.entrySet()) {
+                        ItemWithSourceId key = entry.getKey();
+                        ItemStack itemStack = key.getItemStack();
+                        int count = entry.getValue();
+                        
+                        if (count > 0) {
+                            // Search for the corresponding pattern in Replication
+                            for (NetworkElement chipSupplier : network.getChipSuppliers()) {
+                                var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
+                                if (tile instanceof ChipStorageBlockEntity chipStorage) {
+                                    for (MatterPattern pattern : chipStorage.getPatterns(level, chipStorage)) {
+                                        if (pattern.getStack().getItem().equals(itemStack.getItem())) {
+                                            // LOGGER.info("Bridge: Creating task for {} item of {} (requests accumulated in {} ticks)", 
+                                            //    count, itemStack.getItem().getDescriptionId(), REQUEST_ACCUMULATION_TICKS);
+                                            
+                                            // Create a replication task with the total quantity
+                                            ReplicationTask task = new ReplicationTask(
+                                                pattern.getStack(), 
+                                                count, // Use the total number of accumulated requests
+                                                IReplicationTask.Mode.MULTIPLE, 
+                                                chipStorage.getBlockPos()
+                                            );
+                                            
+                                            // Add the task to the network
+                                            String taskId = task.getUuid().toString();
+                                            network.getTaskManager().getPendingTasks().put(taskId, task);
+                                            
+                                            // Add to the active tasks map with source information
+                                            TaskSourceInfo info = new TaskSourceInfo(itemStack, sourceId);
+                                            
+                                            // Initialize the map for this source if needed
+                                            Map<String, TaskSourceInfo> sourceTasks = activeTasks.getOrDefault(sourceId, new HashMap<>());
+                                            sourceTasks.put(taskId, info);
+                                            activeTasks.put(sourceId, sourceTasks);
+                                            
+                                            // Update the request counter for the pattern by source
+                                            Map<ItemStack, Integer> sourceRequests = patternRequestsBySource.getOrDefault(sourceId, new HashMap<>());
+                                            int currentPatternRequests = sourceRequests.getOrDefault(itemStack, 0);
+                                            sourceRequests.put(itemStack, currentPatternRequests + count);
+                                            patternRequestsBySource.put(sourceId, sourceRequests);
+                                            
+                                            // Also update the global counter for backward compatibility
+                                            Map<ItemStack, Integer> globalRequests = patternRequests.getOrDefault(sourceId, new HashMap<>());
+                                            int currentGlobalRequests = globalRequests.getOrDefault(itemStack, 0);
+                                            globalRequests.put(itemStack, currentGlobalRequests + count);
+                                            patternRequests.put(sourceId, globalRequests);
+                                            
+                                            //LOGGER.info("Bridge: Task created with ID {}, total requests for this pattern: {}", 
+                                            //    taskId, currentPatternRequests + count);
+                                            
+                                            // Extract the necessary matter
+                                            var matterCompound = ClientReplicationCalculation.getMatterCompound(pattern.getStack());
+                                            if (matterCompound != null) {
+                                                // Extract each type of matter from the network
+                                                for (MatterValue matterValue : matterCompound.getValues().values()) {
+                                                    var matterType = matterValue.getMatter();
+                                                    var matterAmount = (long)Math.ceil(matterValue.getAmount()) * count;
                                                     
-                                                    // Note: now we extract real matter for replication
-                                                    // LOGGER.info("Bridge: Extracting {} real matter {} for replication", 
-                                                    //    matterAmount, matterType.getName());
-                                                    
-                                                    // Extract matter from the Replication network
-                                                    // Decrease the matter available from the network
-                                                    // In Replication, there is no direct method to extract matter from the network
-                                                    // so here we simulate extraction by removing the count from the virtual display
-                                                    
-                                                    // We consume virtual matter always to avoid pattern blockages
-                                                    long extracted = extract(matterKey, matterAmount, Actionable.MODULATE);
-                                                    // LOGGER.info("Bridge: Consumed virtual matter {}: {}", matterType.getName(), extracted);
+                                                    // Find the corresponding virtual item
+                                                    Item matterItem = getItemForMatterType(matterType);
+                                                    if (matterItem != null) {
+                                                        AEItemKey matterKey = AEItemKey.of(matterItem);
+                                                        
+                                                        // Note: now we extract real matter for replication
+                                                        // LOGGER.info("Bridge: Extracting {} real matter {} for replication", 
+                                                        //    matterAmount, matterType.getName());
+                                                        
+                                                        // Extract matter from the Replication network
+                                                        // Decrease the matter available from the network
+                                                        // In Replication, there is no direct method to extract matter from the network
+                                                        // so here we simulate extraction by removing the count from the virtual display
+                                                        
+                                                        // We consume virtual matter always to avoid pattern blockages
+                                                        long extracted = extract(matterKey, matterAmount, Actionable.MODULATE);
+                                                        // LOGGER.info("Bridge: Consumed virtual matter {}: {}", matterType.getName(), extracted);
+                                                    }
                                                 }
                                             }
+                                            break;
                                         }
-                                        break;
                                     }
                                 }
                             }
@@ -914,6 +1011,11 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     // Implementazione di ICraftingProvider
     @Override
     public List<IPatternDetails> getAvailablePatterns() {
+        // Don't show patterns if not initialized
+        if (initialized != 1) {
+            return List.of();
+        }
+        
         List<IPatternDetails> patterns = new ArrayList<>();
         MatterNetwork network = getNetwork();
         if (network != null) {
@@ -978,6 +1080,11 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     @Override
     public boolean pushPattern(IPatternDetails patternDetails, KeyCounter[] inputHolder) {
+        // Don't accept patterns if not initialized
+        if (initialized != 1) {
+            return false;
+        }
+        
         MatterNetwork network = getNetwork();
         
         if (network != null && isActive() && patternDetails != null) {
@@ -1074,10 +1181,15 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                         }
                                     }
                                     
-                                    // Increment the counter for this item
+                                    // Increment the counter for this item with source information
                                     ItemStack itemStack = pattern.getStack();
-                                    int currentCount = requestCounters.getOrDefault(itemStack, 0);
-                                    requestCounters.put(itemStack, currentCount + 1);
+                                    ItemWithSourceId key = new ItemWithSourceId(itemStack, this.blockId);
+                                    
+                                    // Get or create the map for this source
+                                    Map<ItemWithSourceId, Integer> sourceCounters = requestCounters.getOrDefault(this.blockId, new HashMap<>());
+                                    int currentCount = sourceCounters.getOrDefault(key, 0);
+                                    sourceCounters.put(key, currentCount + 1);
+                                    requestCounters.put(this.blockId, sourceCounters);
                                     
                                     //LOGGER.info("Bridge: Pattern found for {}, total requests in the last 10 ticks: {}", 
                                     //    itemKey.getItem().getDescriptionId(), currentCount + 1);
@@ -1101,22 +1213,52 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     public boolean isBusy() {
         MatterNetwork network = getNetwork();
         if (network != null) {
-            // Remove completed tasks from the map
-            network.getTaskManager().getPendingTasks().keySet().forEach(taskId -> {
-                if (!activeTasks.containsKey(taskId)) {
-                    // The task has been completed, remove it
-                    ItemStack pattern = activeTasks.remove(taskId);
-                    if (pattern != null) {
-                        // Decrement the counter for this pattern
-                        int currentCount = patternRequests.getOrDefault(pattern, 0);
-                        if (currentCount > 0) {
-                            patternRequests.put(pattern, currentCount - 1);
-                            //LOGGER.info("Bridge: Task completed for {}, remaining {} active requests", 
-                            //    pattern.getItem().getDescriptionId(), currentCount - 1);
+            // Get all task IDs from the network
+            Set<String> networkTaskIds = new HashSet<>(network.getTaskManager().getPendingTasks().keySet());
+            
+            // Check all sources
+            for (UUID sourceId : activeTasks.keySet()) {
+                Map<String, TaskSourceInfo> sourceTasks = activeTasks.get(sourceId);
+                
+                // Create a copy of the keys to avoid concurrent modification
+                Set<String> taskIds = new HashSet<>(sourceTasks.keySet());
+                
+                for (String taskId : taskIds) {
+                    // If the task is no longer in the network, it's completed
+                    if (!networkTaskIds.contains(taskId)) {
+                        // The task has been completed, remove it
+                        TaskSourceInfo info = sourceTasks.remove(taskId);
+                        if (info != null) {
+                            ItemStack pattern = info.getItemStack();
+                            
+                            // Decrement the counter for this pattern by source
+                            Map<ItemStack, Integer> sourceRequests = patternRequestsBySource.getOrDefault(sourceId, new HashMap<>());
+                            int currentCount = sourceRequests.getOrDefault(pattern, 0);
+                            if (currentCount > 0) {
+                                sourceRequests.put(pattern, currentCount - 1);
+                                patternRequestsBySource.put(sourceId, sourceRequests);
+                            }
+                            
+                            // Also update the global counter for backward compatibility
+                            Map<ItemStack, Integer> globalRequests = patternRequests.getOrDefault(sourceId, new HashMap<>());
+                            int currentGlobalCount = globalRequests.getOrDefault(pattern, 0);
+                            if (currentGlobalCount > 0) {
+                                globalRequests.put(pattern, currentGlobalCount - 1);
+                                patternRequests.put(sourceId, globalRequests);
+                                //LOGGER.info("Bridge: Task completed for {}, remaining {} active requests", 
+                                //    pattern.getItem().getDescriptionId(), currentGlobalCount - 1);
+                            }
                         }
                     }
                 }
-            });
+                
+                // If this source has no more tasks, remove it from the map
+                if (sourceTasks.isEmpty()) {
+                    activeTasks.remove(sourceId);
+                } else {
+                    activeTasks.put(sourceId, sourceTasks);
+                }
+            }
 
             boolean busy = !network.getTaskManager().getPendingTasks().isEmpty();
             
@@ -1132,9 +1274,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             /*if (busy) {
                 LOGGER.info("Bridge: Occupied with {} pending tasks", network.getTaskManager().getPendingTasks().size());
                 // Log delle richieste per pattern
-                patternRequests.forEach((pattern, count) -> 
-                    LOGGER.info("Bridge: Pattern {} has {} active requests", 
-                       pattern.getItem().getDescriptionId(), count));
+                patternRequests.forEach((sourceId, patterns) -> 
+                    patterns.forEach((pattern, count) ->
+                        LOGGER.info("Bridge: Pattern {} has {} active requests from source {}", 
+                            pattern.getItem().getDescriptionId(), count, sourceId)));
             }*/
             return busy;
         }
@@ -1325,6 +1468,11 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     // Method to show virtual items in the AE2 terminal
     public void getAvailableItems(KeyCounter items) {
+        // Don't show items if not initialized
+        if (initialized != 1) {
+            return;
+        }
+        
         //LOGGER.info("Bridge: Called getAvailableItems");
         MatterNetwork network = getNetwork();
         if (network != null) {
@@ -1361,6 +1509,11 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     @Override
     public void mountInventories(IStorageMounts storageMounts) {
+        // Don't mount storage if not initialized
+        if (initialized != 1) {
+            return;
+        }
+        
         // Mount the virtual storage with high priority to be always visible
         storageMounts.mount(matterItemsStorage, 100);
     }
@@ -1371,12 +1524,22 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     private class MatterItemsStorage implements MEStorage {
         @Override
         public long insert(AEKey what, long amount, Actionable mode, IActionSource source) {
+            // Don't allow insertions if not initialized
+            if (initialized != 1) {
+                return 0;
+            }
+            
             // We don't allow insertions in this storage
             return 0;
         }
 
         @Override
         public long extract(AEKey what, long amount, Actionable mode, IActionSource source) {
+            // Don't allow extractions if not initialized
+            if (initialized != 1) {
+                return 0;
+            }
+            
             // We allow extraction, but only for autocrafting operations
             if (what instanceof AEItemKey itemKey && isVirtualMatterItem(itemKey.getItem())) {
                 // Get the network
@@ -1404,12 +1567,12 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                         }
                         
                         // Check if the source is an export bus or automatic interface (which we want to block)
-                        if (source != null && isAutomationPart(source)) {
+                        /*if (source != null && isAutomationPart(source)) {
                             // Block requests from export bus
                             //LOGGER.warn("Bridge: Block extraction from export bus of {} {}", 
                             //    amount, matterType.getName());
                             return 0;
-                        }
+                        }*/
                         
                         // Allow all other operations
                         if (toExtract > 0) {
@@ -1449,6 +1612,11 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
         @Override
         public void getAvailableStacks(KeyCounter out) {
+            // Don't show stacks if not initialized
+            if (initialized != 1) {
+                return;
+            }
+            
             MatterNetwork network = getNetwork();
             if (network != null) {
                 // Get all registered matter types
@@ -1506,5 +1674,112 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         if (item == ModItems.LIVING_MATTER.get()) return ReplicationRegistry.Matter.LIVING.get();
         if (item == ModItems.QUANTUM_MATTER.get()) return ReplicationRegistry.Matter.QUANTUM.get();
         return null;
+    }
+
+    // Method to handle world unload event
+    public void onWorldUnload() {
+        // Set state to 2 only when the world is actually unloaded
+        if (initialized == 1) {
+            initialized = 0;
+           // LOGGER.info("Bridge: Unloading Bridge...");
+        }
+    }
+
+    /**
+     * Get the unique identifier for this block
+     * @return the UUID of this block
+     */
+    public UUID getBlockId() {
+        return blockId;
+    }
+
+    /**
+     * Get the number of active requests for this specific block
+     * @return the total number of active requests for this block
+     */
+    public int getActiveRequestsForThisBlock() {
+        Map<ItemStack, Integer> requests = patternRequestsBySource.getOrDefault(this.blockId, new HashMap<>());
+        return requests.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    /**
+     * Get the number of active requests for a specific item from this block
+     * @param item the item to check
+     * @return the number of active requests for the item from this block
+     */
+    public int getActiveRequestsForItem(Item item) {
+        Map<ItemStack, Integer> requests = patternRequestsBySource.getOrDefault(this.blockId, new HashMap<>());
+        return requests.entrySet().stream()
+            .filter(entry -> entry.getKey().getItem() == item)
+            .mapToInt(Map.Entry::getValue)
+            .sum();
+    }
+
+    /**
+     * Get the total number of active requests across all blocks
+     * @return the total number of active requests
+     */
+    public int getTotalActiveRequests() {
+        int total = 0;
+        for (Map<ItemStack, Integer> sourceRequests : patternRequestsBySource.values()) {
+            total += sourceRequests.values().stream().mapToInt(Integer::intValue).sum();
+        }
+        return total;
+    }
+
+    /**
+     * Helper class to track an item with its source block ID
+     */
+    public static class ItemWithSourceId {
+        private final ItemStack itemStack;
+        private final UUID sourceId;
+        
+        public ItemWithSourceId(ItemStack itemStack, UUID sourceId) {
+            this.itemStack = itemStack.copy(); // Create a copy to avoid reference issues
+            this.sourceId = sourceId;
+        }
+        
+        public ItemStack getItemStack() {
+            return itemStack;
+        }
+        
+        public UUID getSourceId() {
+            return sourceId;
+        }
+        
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            ItemWithSourceId that = (ItemWithSourceId) o;
+            return ItemStack.matches(itemStack, that.itemStack) && 
+                   Objects.equals(sourceId, that.sourceId);
+        }
+        
+        @Override
+        public int hashCode() {
+            return Objects.hash(itemStack.getItem(), sourceId);
+        }
+    }
+    
+    /**
+     * Helper class to track task information including source block
+     */
+    public static class TaskSourceInfo {
+        private final ItemStack itemStack;
+        private final UUID sourceId;
+        
+        public TaskSourceInfo(ItemStack itemStack, UUID sourceId) {
+            this.itemStack = itemStack.copy(); // Create a copy to avoid reference issues
+            this.sourceId = sourceId;
+        }
+        
+        public ItemStack getItemStack() {
+            return itemStack;
+        }
+        
+        public UUID getSourceId() {
+            return sourceId;
+        }
     }
 }
