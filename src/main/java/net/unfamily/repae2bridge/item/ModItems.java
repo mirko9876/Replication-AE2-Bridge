@@ -12,8 +12,8 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 import net.minecraft.core.registries.Registries;
 
 /**
- * Classe base per tutti gli item di materia virtuale.
- * Questi item scompariranno se lasciati nell'inventario del giocatore.
+ * Base class for all virtual matter items.
+ * These items will disappear if left in the player's inventory.
  */
 class MatterItem extends Item {
     public MatterItem(Properties properties) {
@@ -22,9 +22,9 @@ class MatterItem extends Item {
     
     @Override
     public void inventoryTick(ItemStack stack, Level level, Entity entity, int slotId, boolean isSelected) {
-        // Fa sparire l'item se è nell'inventario di un giocatore
+        // Makes the item disappear if it's in a player's inventory
         if (entity instanceof Player && !level.isClientSide()) {
-            // Rimuove l'item dall'inventario
+            // Remove the item from inventory
             stack.setCount(0);
         }
     }

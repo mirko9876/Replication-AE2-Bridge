@@ -34,16 +34,16 @@ public class ModBlocks {
     public static void register(IEventBus eventBus) {
         BLOCKS.register(eventBus);
         
-        // Aggiungiamo il nostro blocco alla lista dei blocchi a cui il tubo può connettersi
-        // Questo viene fatto dopo la registrazione in modo che il blocco sia disponibile
+        // Add our block to the list of blocks the pipe can connect to
+        // This is done after registration so the block is available
         registerConnectableBlocks();
     }
     
     /**
-     * Registra il nostro blocco nella lista dei blocchi a cui i tubi Matter Network possono connettersi
+     * Register our block in the list of blocks to which Matter Network pipes can connect
      */
     private static void registerConnectableBlocks() {
-        // Aggiungiamo il nostro namespace alla lista di namespace consentiti
+        // Add our namespace to the list of allowed namespaces
         MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS.add(block -> 
             block instanceof RepAE2BridgeBl || 
             (block.getClass().getName().contains("repae2bridge"))

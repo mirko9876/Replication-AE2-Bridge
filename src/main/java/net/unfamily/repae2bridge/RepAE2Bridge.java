@@ -18,7 +18,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.config.ModConfig;
+//import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
@@ -39,7 +39,7 @@ public class RepAE2Bridge
     // Directly reference a slf4j logger
     private static final Logger LOGGER = LogUtils.getLogger();
     
-    // Definire la capability per IInWorldGridNodeHost
+    // Define the capability for IInWorldGridNodeHost
     private static final BlockCapability<IInWorldGridNodeHost, Void> IN_WORLD_GRID_NODE_HOST = 
         BlockCapability.createVoid(ResourceLocation.parse("ae2:inworld_gridnode_host"), IInWorldGridNodeHost.class);
 
@@ -50,7 +50,7 @@ public class RepAE2Bridge
         // Register the commonSetup method for modloading
         modEventBus.addListener(this::commonSetup);
         
-        // Registra l'evento per le capacità
+        // Register the event for capabilities
         modEventBus.addListener(this::registerCapabilities);
 
         // Register ourselves for server and other game events we are interested in.
@@ -62,50 +62,49 @@ public class RepAE2Bridge
         modEventBus.addListener(this::addCreative);
 
         // Register our mod's ModConfigSpec so that FML can create and load the config file for us
-        modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+        //modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
 
-        // Registra i moduli
+        // Register modules
         ModItems.register(modEventBus);
         ModBlocks.register(modEventBus);
         ModBlockEntities.register(modEventBus);
-        ;
     }
 
     private void commonSetup(final FMLCommonSetupEvent event)
     {
         // Some common setup code
-        LOGGER.info("HELLO FROM COMMON SETUP");
+        // LOGGER.info("HELLO FROM COMMON SETUP");
 
-        if (Config.logDirtBlock)
-            LOGGER.info("DIRT BLOCK >> {}", BuiltInRegistries.BLOCK.getKey(Blocks.DIRT));
+        // if (Config.logDirtBlock)
+        //     LOGGER.info("DIRT BLOCK >> {}", BuiltInRegistries.BLOCK.getKey(Blocks.DIRT));
 
-        LOGGER.info(Config.magicNumberIntroduction + Config.magicNumber);
+        // LOGGER.info(Config.magicNumberIntroduction + Config.magicNumber);
 
-        Config.items.forEach((item) -> LOGGER.info("ITEM >> {}", item.toString()));
+        // Config.items.forEach((item) -> LOGGER.info("ITEM >> {}", item.toString()));
         
-        // Registra il factory degli elementi di rete per la mod Replication
-        // Questo è cruciale per far funzionare la connessione alla rete Replication
+        // Register the network element factory for the Replication mod
+        // This is crucial for making the connection to the Replication network work
         event.enqueueWork(() -> {
             try {
-                // Registra direttamente il factory per l'elemento DefaultMatterNetworkElement come fa Replication
-                LOGGER.info("Registering DefaultMatterNetworkElement factory for Replication integration");
+                // Directly register the factory for DefaultMatterNetworkElement as done by Replication
+                // LOGGER.info("Registering DefaultMatterNetworkElement factory for Replication integration");
                 NetworkElementRegistry.INSTANCE.addFactory(DefaultMatterNetworkElement.ID, new DefaultMatterNetworkElement.Factory());
-                LOGGER.info("Replication network integration complete");
+                // LOGGER.info("Replication network integration complete");
             } catch (Exception e) {
                 LOGGER.error("Failed to register with Replication network system", e);
             }
         });
 
-        // Registra il namespace della nostra mod come namespace consentito per i cavi di Replication
+        // Register our mod's namespace as an allowed namespace for Replication cables
         event.enqueueWork(() -> {
-            // Questo garantisce che venga eseguito nel thread principale
+            // This ensures it runs on the main thread
             registerWithReplicationMod();
         });
     }
 
-    // Registra le capacità del bridge
+    // Register bridge capabilities
     private void registerCapabilities(RegisterCapabilitiesEvent event) {
-        // Registra la capacità IInWorldGridNodeHost per il blocco bridge
+        // Register the IInWorldGridNodeHost capability for the bridge block
         event.registerBlock(
             IN_WORLD_GRID_NODE_HOST,
             (level, pos, state, be, context) -> {
@@ -117,17 +116,17 @@ public class RepAE2Bridge
             ModBlocks.REPAE2BRIDGE.get()
         );
 
-        // Log che le capacità sono state registrate
-        LOGGER.info("AE2 Bridge capacities registered successfully");
+        // Log that capabilities have been registered
+        // LOGGER.info("AE2 Bridge capacities registered successfully");
     }
 
     // Add the example block item to the building blocks tab
     private void addCreative(BuildCreativeModeTabContentsEvent event)
     {
-        // Aggiungi il bridge al creative tab principale di AE2
+        // Add the bridge to AE2's main creative tab
         if (event.getTabKey() == appeng.api.ids.AECreativeTabIds.MAIN) {
             event.accept(ModBlocks.REPAE2BRIDGE.get());
-            LOGGER.info("Added RepAE2Bridge to AE2 creative tab");
+            // LOGGER.info("Added RepAE2Bridge to AE2 creative tab");
         }
     }
 
@@ -135,7 +134,7 @@ public class RepAE2Bridge
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event)
     {
-        LOGGER.info("RepAE2Bridge: Server starting");
+        // LOGGER.info("RepAE2Bridge: Server starting");
     }
 
     // You can use EventBusSubscriber to automatically register all static methods in the class annotated with @SubscribeEvent
@@ -145,21 +144,21 @@ public class RepAE2Bridge
         @SubscribeEvent
         public static void onClientSetup(FMLClientSetupEvent event)
         {
-            LOGGER.info("RepAE2Bridge: Client setup");
+            // LOGGER.info("RepAE2Bridge: Client setup");
         }
     }
 
     /**
-     * Registra il namespace della mod nella lista dei namespace consentiti per i cavi di Replication
+     * Register the mod namespace in the list of allowed namespaces for Replication cables
      */
     private void registerWithReplicationMod() {
-        LOGGER.info("Registering RepAE2Bridge with Replication mod");
+        // LOGGER.info("Registering RepAE2Bridge with Replication mod");
         
-        // Aggiungi il namespace della mod alla lista dei namespace consentiti
+        // Add the mod namespace to the list of allowed namespaces
         MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS.add(block -> 
             block.getClass().getName().contains(MOD_ID)
         );
         
-        LOGGER.info("Successfully registered with Replication mod");
+        // LOGGER.info("Successfully registered with Replication mod");
     }
 }

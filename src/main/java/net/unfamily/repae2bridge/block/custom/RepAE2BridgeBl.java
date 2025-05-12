@@ -30,29 +30,29 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     public static final VoxelShape SHAPE = box(0, 0, 0, 16, 16, 16);
     public static final MapCodec<RepAE2BridgeBl> CODEC = simpleCodec(RepAE2BridgeBl::new);
     
-    // Aggiungiamo una proprietà per visualizzare lo stato di connessione
+    // Add a property to display the connection status
     public static final BooleanProperty CONNECTED = BooleanProperty.create("connected");
 
     public RepAE2BridgeBl(Properties properties) {
         super(properties, RepAE2BridgeBlockEntity.class);
-        // Imposta lo stato predefinito con connessione a false
+        // Set the default state with connection to false
         registerDefaultState(this.getStateDefinition().any().setValue(CONNECTED, false));
         
-        // Registra il blocco come connettibile con i tubi Replication
-        // (Aggiunto in caso il modulo statico in ModBlocks non venga eseguito in tempo)
+        // Register the block as connectable with Replication pipes
+        // (Added in case the static module in ModBlocks is not executed in time)
         registerWithReplicationMod();
     }
     
     /**
-     * Registra questo blocco come connettibile dai tubi Replication
+     * Register this block as connectable by Replication pipes
      */
     private void registerWithReplicationMod() {
         try {
-            // Verifica se la classe MatterPipeBlock esiste già
+            // Check if the MatterPipeBlock class already exists
             if (MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS != null) {
-                // Aggiungi un predicate per questo blocco specifico
+                // Add a predicate for this specific block
                 MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS.add(block -> block instanceof RepAE2BridgeBl);
-                System.out.println("Registered RepAE2BridgeBl with Replication mod pipes");
+                // System.out.println("Registered RepAE2BridgeBl with Replication mod pipes");
             }
         } catch (Exception e) {
             System.err.println("Failed to register block with Replication: " + e.getMessage());
@@ -91,42 +91,42 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     public void setPlacedBy(Level level, BlockPos pos, BlockState state, @org.jetbrains.annotations.Nullable net.minecraft.world.entity.LivingEntity entity, net.minecraft.world.item.ItemStack stack) {
         super.setPlacedBy(level, pos, state, entity, stack);
         
-        // Forza un aggiornamento ai blocchi vicini quando il bridge viene piazzato
+        // Force an update to neighboring blocks when the bridge is placed
         if (!level.isClientSide()) {
-            // Inizializza immediatamente la BlockEntity
+            // Initialize the BlockEntity immediately
             if (level.getBlockEntity(pos) instanceof RepAE2BridgeBlockEntity blockEntity) {
-                // Inizializza il nodo AE2
+                // Initialize the AE2 node
                 blockEntity.handleNeighborChanged(pos);
             }
             
-            // Notifica i blocchi vicini
+            // Notify neighboring blocks
             updateNeighbors(level, pos, state);
         }
     }
     
     /**
-     * Metodo utile per aggiornare i blocchi vicini
+     * Useful method to update neighboring blocks
      */
     private void updateNeighbors(Level level, BlockPos pos, BlockState state) {
-        // Aggiorna il blocco stesso
+        // Update the block itself
         level.sendBlockUpdated(pos, state, state, 3);
         
-        // Aggiorna tutti i blocchi adiacenti per garantire che rilevino la connessione
+        // Update all adjacent blocks to ensure they detect the connection
         for (Direction direction : Direction.values()) {
             BlockPos neighborPos = pos.relative(direction);
             BlockState neighborState = level.getBlockState(neighborPos);
             
-            // Notifica il blocco vicino del cambiamento
+            // Notify the neighboring block of the change
             level.neighborChanged(neighborPos, state.getBlock(), pos);
             
-            // Se il blocco vicino è un tubo della rete di Replication, forzalo ad aggiornarsi
+            // If the neighboring block is a Replication network pipe, force it to update
             if (neighborState.getBlock() instanceof MatterPipeBlock) {
-                // Aggiorna lo stato visivo del tubo
+                // Update the visual state of the pipe
                 level.sendBlockUpdated(neighborPos, neighborState, neighborState, 3);
                 
-                // Forza un ricalcolo più aggressivo della connessione
+                // Force a more aggressive recalculation of the connection
                 if (neighborState.hasProperty(MatterPipeBlock.DIRECTIONS.get(direction.getOpposite()))) {
-                    // Questo forza un ricalcolo sia tramite block event sia tramite cambio di stato
+                    // This forces a recalculation both via block event and via state change
                     level.setBlock(neighborPos, neighborState.setValue(
                             MatterPipeBlock.DIRECTIONS.get(direction.getOpposite()), 
                             true), 3);
@@ -139,9 +139,9 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     public void neighborChanged(BlockState state, Level level, BlockPos pos, net.minecraft.world.level.block.Block blockIn, BlockPos fromPos, boolean isMoving) {
         super.neighborChanged(state, level, pos, blockIn, fromPos, isMoving);
         
-        // Se un blocco vicino cambia, informiamo la BlockEntity
+        // If a neighboring block changes, inform the BlockEntity
         if (!level.isClientSide()) {
-            // Verifica se il blocco adiacente è un tubo di Replication
+            // Check if the adjacent block is a Replication pipe
             Direction directionToPipe = null;
             for (Direction direction : Direction.values()) {
                 if (pos.relative(direction).equals(fromPos) && 
@@ -151,18 +151,18 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
                 }
             }
             
-            // Notifica la BlockEntity dell'aggiornamento
+            // Notify the BlockEntity of the update
             if (level.getBlockEntity(pos) instanceof RepAE2BridgeBlockEntity blockEntity) {
-                // Utilizziamo il metodo handleNeighborChanged
+                // Use the handleNeighborChanged method
                 blockEntity.handleNeighborChanged(fromPos);
                 
-                // Aggiorniamo lo stato visivo del blocco in base alle connessioni
+                // Update the visual state of the block based on connections
                 boolean isConnected = blockEntity.isActive() && blockEntity.getNetwork() != null;
                 if (state.getValue(CONNECTED) != isConnected) {
                     level.setBlock(pos, state.setValue(CONNECTED, isConnected), 3);
                 }
                 
-                // Se è stato trovato un tubo adiacente, forza l'aggiornamento del tubo
+                // If an adjacent pipe was found, force the pipe to update
                 if (directionToPipe != null) {
                     BlockState pipeState = level.getBlockState(fromPos);
                     if (pipeState.getBlock() instanceof MatterPipeBlock) {
@@ -175,11 +175,11 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     
     @Override
     public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean moving) {
-        // Se il blocco è stato rimosso o sostituito
+        // If the block has been removed or replaced
         if (!state.is(newState.getBlock())) {
-            // Assicurati che la BlockEntity venga rimossa correttamente
+            // Make sure the BlockEntity is properly removed
             if (level.getBlockEntity(pos) instanceof RepAE2BridgeBlockEntity blockEntity) {
-                // Forziamo la disconnessione esplicita da entrambe le reti
+                // Force explicit disconnection from both networks
                 blockEntity.disconnectFromNetworks();
             }
             level.removeBlockEntity(pos);
@@ -190,7 +190,7 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
 
     @Override
     public boolean canConnect(Level level, BlockPos pos, BlockState state, Direction direction) {
-        // Permettiamo la connessione da tutte le direzioni per la rete di Replication
+        // Allow connection from all directions for the Replication network
         return true;
     }
 }
