@@ -124,7 +124,11 @@ public class RepAE2Bridge
     // Add the example block item to the building blocks tab
     private void addCreative(BuildCreativeModeTabContentsEvent event)
     {
-
+        // Aggiungi il bridge al creative tab principale di AE2
+        if (event.getTabKey() == appeng.api.ids.AECreativeTabIds.MAIN) {
+            event.accept(ModBlocks.REPAE2BRIDGE.get());
+            LOGGER.info("Added RepAE2Bridge to AE2 creative tab");
+        }
     }
 
     // You can use SubscribeEvent and let the Event Bus discover methods to call

@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "ABA",
+    "BCB",
+    "ABA"
+  ],
+  "key": {
+    "A": {
+      "tag": "ae2:pattern_provider"
+    },
+    "B": {
+      "item": "ae2:storage_bus"
+    },
+    "C": {
+      "tag": "c:storage_blocks/replica"
+    }
+  },
+  "result": {
+    "id": "rep_ae2_bridge:rep_ae2_bridge",
+    "count": 1
+  }
+} 

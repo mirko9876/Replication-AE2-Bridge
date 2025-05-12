@@ -213,13 +213,15 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
               
         // Inizializza i componenti del terminale
         this.terminalPlayerTracker = new TerminalPlayerTracker();
-        this.sortingTypeValue = 0;
+        /*this.sortingTypeValue = 0;
         this.sortingDirection = 1;
         this.matterOpediaSortingTypeValue = 0;
-        this.matterOpediaSortingDirection = 1;
-        this.output = new InventoryComponent<RepAE2BridgeBlockEntity>("output", 11, 131, 9*2)
-                .setRange(9,2);
-        this.addInventory(this.output);
+        this.matterOpediaSortingDirection = 1;*/
+        
+        // Rimuovo la creazione dell'inventario per evitare la GUI
+        // this.output = new InventoryComponent<RepAE2BridgeBlockEntity>("output", 11, 131, 9*2)
+        //        .setRange(9,2);
+        // this.addInventory(this.output);
     }
     
     @NotNull
@@ -785,24 +787,12 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     @Override
     public ItemInteractionResult onActivated(Player playerIn, InteractionHand hand, Direction facing, double hitX, double hitY, double hitZ) {
-        if (super.onActivated(playerIn, hand, facing, hitX, hitY, hitZ) == ItemInteractionResult.SUCCESS) {
-            return ItemInteractionResult.SUCCESS;
-        }
-        if (playerIn instanceof ServerPlayer serverPlayer) {
-            // Invia tutti i pattern disponibili
-            for (NetworkElement chipSupplier : this.getNetwork().getChipSuppliers()) {
-                var tile = chipSupplier.getLevel().getBlockEntity(chipSupplier.getPos());
-                if (tile instanceof ChipStorageBlockEntity chipStorage) {
-                    this.getNetwork().sendPatternSyncPacket(serverPlayer, chipStorage, tile.getBlockPos());
-                }
-            }
-            
-            // Invia lo stato della materia
-            this.getNetwork().getTaskManager().getPendingTasks().values().forEach(task -> {
-                this.getNetwork().sendTaskSyncPacket(serverPlayer, task);
-            });
-            
-            // Aggiorna anche i pattern in AE2
+        // Non chiamare super.onActivated() che aprirebbe la GUI
+        // Non chiamare openGui(playerIn) che aprirebbe la GUI
+        
+        // Manteniamo solo la parte relativa all'aggiornamento dei pattern AE2
+        if (!level.isClientSide() && playerIn instanceof ServerPlayer serverPlayer) {
+            // Aggiorna i pattern in AE2
             ICraftingProvider.requestUpdate(mainNode);
             LOGGER.info("Bridge: Aggiornamento pattern AE2 da onActivated");
         }
@@ -814,7 +804,8 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     }
 
     public InventoryComponent<RepAE2BridgeBlockEntity> getOutput() {
-        return output;
+        // Restituisco null per evitare errori
+        return null;
     }
 
     // =================== Classe TerminalPlayerTracker ===================
