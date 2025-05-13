@@ -1,8 +1,8 @@
 package net.unfamily.repae2bridge.block.custom;
 
+import com.mojang.logging.LogUtils;
 import com.mojang.serialization.MapCodec;
 import net.unfamily.repae2bridge.block.entity.RepAE2BridgeBlockEntity;
-import net.unfamily.repae2bridge.block.entity.ModBlockEntities;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.BlockGetter;
@@ -17,19 +17,20 @@ import com.hrznstudio.titanium.block_network.INetworkDirectionalConnection;
 import com.buuz135.replication.block.MatterPipeBlock;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.level.block.state.StateDefinition;
-import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.Block;
-import com.buuz135.replication.Replication;
-import appeng.api.networking.crafting.ICraftingProvider;
-import net.minecraft.world.InteractionResult;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.Containers;
+import org.slf4j.Logger;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.Explosion;
 
 public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> implements INetworkDirectionalConnection {
     public static final VoxelShape SHAPE = box(0, 0, 0, 16, 16, 16);
     public static final MapCodec<RepAE2BridgeBl> CODEC = simpleCodec(RepAE2BridgeBl::new);
-    
+
+    private static final Logger LOGGER = LogUtils.getLogger();
+
     // Add a property to display the connection status
     public static final BooleanProperty CONNECTED = BooleanProperty.create("connected");
 
@@ -52,10 +53,12 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
             if (MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS != null) {
                 // Add a predicate for this specific block
                 MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS.add(block -> block instanceof RepAE2BridgeBl);
-                // System.out.println("Registered RepAE2BridgeBl with Replication mod pipes");
+                // Debug log disabled for production
+                // LOGGER.debug("Registered RepAE2BridgeBl with Replication mod pipes");
             }
         } catch (Exception e) {
-            System.err.println("Failed to register block with Replication: " + e.getMessage());
+            // Keep error logs for critical failures
+            LOGGER.error("Failed to register block with Replication: " + e.getMessage());
         }
     }
     
@@ -177,8 +180,23 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean moving) {
         // If the block has been removed or replaced
         if (!state.is(newState.getBlock())) {
+            // Drop the block itself if not in creative mode
+            if (!level.isClientSide) {
+                ItemStack itemStack = new ItemStack(this);
+                Containers.dropItemStack(level, pos.getX(), pos.getY(), pos.getZ(), itemStack);
+            }
+            
             // Make sure the BlockEntity is properly removed
             if (level.getBlockEntity(pos) instanceof RepAE2BridgeBlockEntity blockEntity) {
+                // Drop all items in the inventory
+                var inventory = blockEntity.getOutput();
+                for (int i = 0; i < inventory.getSlots(); i++) {
+                    ItemStack stack = inventory.getStackInSlot(i);
+                    if (!stack.isEmpty()) {
+                        Containers.dropItemStack(level, pos.getX(), pos.getY(), pos.getZ(), stack);
+                    }
+                }
+                
                 // Force explicit disconnection from both networks
                 blockEntity.disconnectFromNetworks();
             }
@@ -191,6 +209,12 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     @Override
     public boolean canConnect(Level level, BlockPos pos, BlockState state, Direction direction) {
         // Allow connection from all directions for the Replication network
+        return true;
+    }
+
+    // Ensure the block can always be harvested with any tool
+    @Override
+    public boolean canHarvestBlock(BlockState state, BlockGetter level, BlockPos pos, Player player) {
         return true;
     }
 }

@@ -124,6 +124,9 @@ public class RepAE2Bridge
             ModBlocks.REPAE2BRIDGE.get()
         );
 
+        // Registra le capabilities del bridge per il trasferimento di item
+        RepAE2BridgeCapabilities.register(event);
+
         // Log that capabilities have been registered
         // LOGGER.info("AE2 Bridge capacities registered successfully");
     }
