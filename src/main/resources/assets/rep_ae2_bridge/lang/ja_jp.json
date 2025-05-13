@@ -1,0 +1,11 @@
+{
+    "item.rep_ae2_bridge.earth": "アースマター",
+    "item.rep_ae2_bridge.nether": "ネザーマター",
+    "item.rep_ae2_bridge.organic": "オーガニックマター",
+    "item.rep_ae2_bridge.ender": "エンダーマター",
+    "item.rep_ae2_bridge.metallic": "メタリックマター",
+    "item.rep_ae2_bridge.precious": "プレシャスマター",
+    "item.rep_ae2_bridge.living": "リビングマター",
+    "item.rep_ae2_bridge.quantum": "クァンタムマター",
+    "block.rep_ae2_bridge.rep_ae2_bridge": "AE2-Replication 統合機"
+} 
