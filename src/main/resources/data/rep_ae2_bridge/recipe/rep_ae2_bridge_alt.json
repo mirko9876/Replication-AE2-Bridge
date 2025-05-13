@@ -7,10 +7,10 @@
   ],
   "key": {
     "A": {
-      "item": "ae2:storage_bus"
+      "tag": "ae2:pattern_provider"
     },
     "B": {
-      "tag": "ae2:pattern_provider"
+      "item": "ae2:storage_bus"
     },
     "C": {
       "tag": "c:storage_blocks/replica"
