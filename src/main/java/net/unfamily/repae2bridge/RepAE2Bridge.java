@@ -143,6 +143,7 @@ public class RepAE2Bridge
     public void onServerStarting(ServerStartingEvent event)
     {
         // LOGGER.info("RepAE2Bridge: Server starting");
+        RepAE2BridgeBlockEntity.setWorldUnloading(false);
     }
     
     @SubscribeEvent
