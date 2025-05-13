@@ -1,6 +1,5 @@
 
 Adds a system for integrating AE2 and Replication.
-
 A block is added called AE2-Replication Bridge which allows AE2 to read the Replication netowrk
 
  
