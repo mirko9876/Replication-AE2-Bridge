@@ -27,6 +27,7 @@ import net.minecraft.world.level.Explosion;
 
 public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> implements INetworkDirectionalConnection {
     public static final VoxelShape SHAPE = box(0, 0, 0, 16, 16, 16);
+    public static final MapCodec<RepAE2BridgeBl> CODEC = simpleCodec(RepAE2BridgeBl::new);
 
     private static final Logger LOGGER = LogUtils.getLogger();
 
@@ -34,7 +35,7 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     public static final BooleanProperty CONNECTED = BooleanProperty.create("connected");
 
     public RepAE2BridgeBl(Properties properties) {
-        super("rep_ae2_bridge", properties, RepAE2BridgeBlockEntity.class);
+        super(properties, RepAE2BridgeBlockEntity.class);
         // Set the default state with connection to false
         registerDefaultState(this.getStateDefinition().any().setValue(CONNECTED, false));
         
@@ -49,32 +50,11 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     private void registerWithReplicationMod() {
         try {
             // Check if the MatterPipeBlock class already exists
-            try {
-                // First check if the ALLOWED_CONNECTION_BLOCKS field exists
-                var field = MatterPipeBlock.class.getDeclaredField("ALLOWED_CONNECTION_BLOCKS");
-                if (field != null) {
-                    field.setAccessible(true);
-                    var list = field.get(null);
-                    if (list != null) {
-                        // Use reflection to add our predicate
-                        java.lang.reflect.Method addMethod = list.getClass().getMethod("add", Object.class);
-                        addMethod.invoke(list, (java.util.function.Predicate<net.minecraft.world.level.block.Block>) block -> 
-                            block instanceof RepAE2BridgeBl
-                        );
-                    }
-                }
-            } catch (NoSuchFieldException e) {
-                // If the field doesn't exist, try with the alternative API if it exists
-                try {
-                    var method = MatterPipeBlock.class.getMethod("registerExternalConnectableBlock", java.util.function.Predicate.class);
-                    method.invoke(null, (java.util.function.Predicate<net.minecraft.world.level.block.Block>) block -> 
-                        block instanceof RepAE2BridgeBl
-                    );
-                } catch (Exception ex) {
-                    LOGGER.error("No compatible registration method found in Replication mod: " + ex.getMessage());
-                }
-            } catch (Exception e) {
-                LOGGER.error("Error accessing ALLOWED_CONNECTION_BLOCKS: " + e.getMessage());
+            if (MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS != null) {
+                // Add a predicate for this specific block
+                MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS.add(block -> block instanceof RepAE2BridgeBl);
+                // Debug log disabled for production
+                // LOGGER.debug("Registered RepAE2BridgeBl with Replication mod pipes");
             }
         } catch (Exception e) {
             // Keep error logs for critical failures
@@ -89,8 +69,13 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     }
 
     @Override
-    public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
+    protected VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
         return SHAPE;
+    }
+
+    @Override
+    protected MapCodec<? extends BasicTileBlock<RepAE2BridgeBlockEntity>> codec() {
+        return CODEC;
     }
 
     /* BLOCK ENTITY */
@@ -222,7 +207,7 @@ public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> impl
     }
 
     @Override
-    public boolean canConnect(BlockState state, Direction direction) {
+    public boolean canConnect(Level level, BlockPos pos, BlockState state, Direction direction) {
         // Allow connection from all directions for the Replication network
         return true;
     }
