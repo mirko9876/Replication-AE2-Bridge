@@ -38,7 +38,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import java.util.function.BiConsumer;
 
-
 // The value here should match an entry in the META-INF/neoforge.mods.toml file
 @Mod(RepAE2Bridge.MOD_ID)
 public class RepAE2Bridge
@@ -47,9 +46,9 @@ public class RepAE2Bridge
     public static final String MOD_ID = "rep_ae2_bridge";
     // Directly reference a slf4j logger
     private static final Logger LOGGER = LogUtils.getLogger();
-    
+
     // Define the capability for IInWorldGridNodeHost
-    private static final BlockCapability<IInWorldGridNodeHost, Void> IN_WORLD_GRID_NODE_HOST = 
+    private static final BlockCapability<IInWorldGridNodeHost, Void> IN_WORLD_GRID_NODE_HOST =
         BlockCapability.createVoid(ResourceLocation.parse("ae2:inworld_gridnode_host"), IInWorldGridNodeHost.class);
 
     // The constructor for the mod class is the first code that is run when your mod is loaded.
@@ -58,7 +57,7 @@ public class RepAE2Bridge
     {
         // Register the commonSetup method for modloading
         modEventBus.addListener(this::commonSetup);
-        
+
         // Register the event for capabilities
         modEventBus.addListener(this::registerCapabilities);
 
@@ -90,7 +89,7 @@ public class RepAE2Bridge
         // LOGGER.info(Config.magicNumberIntroduction + Config.magicNumber);
 
         // Config.items.forEach((item) -> LOGGER.info("ITEM >> {}", item.toString()));
-        
+
         // Register the network element factory for the Replication mod
         // This is crucial for making the connection to the Replication network work
         event.enqueueWork(() -> {
@@ -149,15 +148,15 @@ public class RepAE2Bridge
         // LOGGER.info("RepAE2Bridge: Server starting");
         RepAE2BridgeBlockEntity.setWorldUnloading(false);
     }
-    
+
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event)
     {
         LOGGER.info("RepAE2Bridge: Server stopping, notifying bridges to prepare for unload");
-        
+
         // Set the static flag in the BlockEntity class
         RepAE2BridgeBlockEntity.setWorldUnloading(true);
-        
+
         LOGGER.info("RepAE2Bridge: All bridges notified of world unload");
     }
 
@@ -177,12 +176,12 @@ public class RepAE2Bridge
      */
     private void registerWithReplicationMod() {
         // LOGGER.info("Registering RepAE2Bridge with Replication mod");
-        
+
         // Add the mod namespace to the list of allowed namespaces
-        MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS.add(block -> 
+        MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS.add(block ->
             block.getClass().getName().contains(MOD_ID)
         );
-        
+
         // LOGGER.info("Successfully registered with Replication mod");
     }
 }
