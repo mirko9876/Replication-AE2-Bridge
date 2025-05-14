@@ -1,4 +1,4 @@
- package net.unfamily.repae2bridge.block.entity;
+  package net.unfamily.repae2bridge.block.entity;
 
 import appeng.api.config.Actionable;
 import appeng.api.networking.GridHelper;
@@ -776,7 +776,6 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                             LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
                             shouldReconnect = true;
                         }
-                        ICraftingProvider.requestUpdate(mainNode);
                     } else {
                         forceNeighborUpdates();
                     }
@@ -861,7 +860,6 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                             LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
                             shouldReconnect = true;
                         }
-                        ICraftingProvider.requestUpdate(mainNode);
                         shouldReconnect = false;
                     }
                 });
@@ -1893,7 +1891,19 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                    Objects.equals(sourceId, that.sourceId);
         }
 
-        @Override
+        @Overridees().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    /**
+     * Get the number of active requests for a specific item from this block
+     * @param item the item to check
+     * @return the number of active requests for the item from this block
+     */
+    public int getActiveRequestsForItem(Item item) {
+        Map<ItemStack, Integer> requests = patternRequestsBySource.getOrDefault(this.blockId, new HashMap<>());
+        return requests.entrySet().stream()
+            .filter(entry -> entry.getKey().getItem() == item)
+         
         public int hashCode() {
             return Objects.hash(itemStack.getItem(), sourceId);
         }
