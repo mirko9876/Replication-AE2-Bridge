@@ -25,6 +25,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.Explosion;
 
+
 public class RepAE2BridgeBl extends BasicTileBlock<RepAE2BridgeBlockEntity> implements INetworkDirectionalConnection {
     public static final VoxelShape SHAPE = box(0, 0, 0, 16, 16, 16);
 

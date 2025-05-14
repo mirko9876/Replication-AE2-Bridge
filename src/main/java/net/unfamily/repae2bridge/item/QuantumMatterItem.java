@@ -5,6 +5,7 @@ import net.minecraft.client.color.item.ItemColor;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 
+
 public class QuantumMatterItem extends MatterItem {
     public QuantumMatterItem(Properties properties) {
         super(properties);

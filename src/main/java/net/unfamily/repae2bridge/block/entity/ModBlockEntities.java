@@ -10,6 +10,7 @@ import net.minecraftforge.registries.RegistryObject;
 
 import java.util.function.Supplier;
 
+
 public class ModBlockEntities {
     public static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITIES =
             DeferredRegister.create(ForgeRegistries.BLOCK_ENTITY_TYPES, RepAE2Bridge.MOD_ID);

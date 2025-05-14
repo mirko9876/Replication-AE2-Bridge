@@ -11,6 +11,7 @@ import net.minecraftforge.registries.RegistryObject;
 import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
 
+
 /**
  * Base class for all virtual matter items.
  * These items will disappear if left in the player's inventory.
@@ -29,6 +30,7 @@ class MatterItem extends Item {
         }
     }
 }
+
 
 public class ModItems {
     public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, RepAE2Bridge.MOD_ID);

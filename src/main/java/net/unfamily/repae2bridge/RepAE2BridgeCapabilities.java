@@ -6,6 +6,7 @@ import net.minecraftforge.common.capabilities.RegisterCapabilitiesEvent;
 import net.unfamily.repae2bridge.block.ModBlocks;
 import net.unfamily.repae2bridge.block.entity.RepAE2BridgeBlockEntity;
 
+
 /**
  * Class to manage the registration of bridge capabilities
  */
