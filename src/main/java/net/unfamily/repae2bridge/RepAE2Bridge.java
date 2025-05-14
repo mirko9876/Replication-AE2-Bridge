@@ -9,25 +9,26 @@ import com.mojang.logging.LogUtils;
 import com.buuz135.replication.network.DefaultMatterNetworkElement;
 import com.hrznstudio.titanium.block_network.element.NetworkElementRegistry;
 
-import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.Registry;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Blocks;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.bus.api.IEventBus;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.ModContainer;
-import net.neoforged.fml.common.EventBusSubscriber;
-import net.neoforged.fml.common.Mod;
-//import net.neoforged.fml.config.ModConfig;
-import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
-import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
-import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
-import net.neoforged.neoforge.event.server.ServerStartingEvent;
-import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.ModContainer;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.fml.common.Mod;
+//import net.minecraftforge.fml.config.ModConfig;
+import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
+import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.minecraftforge.event.BuildCreativeModeTabContentsEvent;
+import net.minecraftforge.event.server.ServerStartingEvent;
+import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.unfamily.repae2bridge.item.ModItems;
-import net.neoforged.neoforge.capabilities.BlockCapability;
-import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
+import net.minecraftforge.common.capabilities.Capability;
+import net.minecraftforge.common.capabilities.CapabilityManager;
+import net.minecraftforge.common.capabilities.RegisterCapabilitiesEvent;
+import net.minecraftforge.common.capabilities.CapabilityToken;
 import appeng.api.networking.IInWorldGridNodeHost;
 import com.buuz135.replication.block.MatterPipeBlock;
 import net.minecraft.server.level.ServerLevel;
@@ -37,8 +38,9 @@ import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import java.util.function.BiConsumer;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 
-// The value here should match an entry in the META-INF/neoforge.mods.toml file
+// The value here should match an entry in the META-INF/mods.toml file
 @Mod(RepAE2Bridge.MOD_ID)
 public class RepAE2Bridge
 {
@@ -46,31 +48,31 @@ public class RepAE2Bridge
     public static final String MOD_ID = "rep_ae2_bridge";
     // Directly reference a slf4j logger
     private static final Logger LOGGER = LogUtils.getLogger();
-
+    
     // Define the capability for IInWorldGridNodeHost
-    private static final BlockCapability<IInWorldGridNodeHost, Void> IN_WORLD_GRID_NODE_HOST =
-        BlockCapability.createVoid(ResourceLocation.parse("ae2:inworld_gridnode_host"), IInWorldGridNodeHost.class);
+    private static final Capability<IInWorldGridNodeHost> IN_WORLD_GRID_NODE_HOST = 
+        CapabilityManager.get(new CapabilityToken<>(){});
 
-    // The constructor for the mod class is the first code that is run when your mod is loaded.
-    // FML will recognize some parameter types like IEventBus or ModContainer and pass them in automatically.
-    public RepAE2Bridge(IEventBus modEventBus, ModContainer modContainer)
-    {
+    /**
+     * Main constructor of the mod that uses FMLJavaModLoadingContext
+     */
+    public RepAE2Bridge() {
+        LOGGER.info("RepAE2Bridge: Main constructor called");
+        
+        // Get the event bus from the mod
+        IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
+        
         // Register the commonSetup method for modloading
         modEventBus.addListener(this::commonSetup);
-
+        
         // Register the event for capabilities
         modEventBus.addListener(this::registerCapabilities);
 
         // Register ourselves for server and other game events we are interested in.
-        // Note that this is necessary if and only if we want *this* class (ExampleMod) to respond directly to events.
-        // Do not add this line if there are no @SubscribeEvent-annotated functions in this class, like onServerStarting() below.
-        NeoForge.EVENT_BUS.register(this);
+        MinecraftForge.EVENT_BUS.register(this);
 
         // Register the item to a creative tab
         modEventBus.addListener(this::addCreative);
-
-        // Register our mod's ModConfigSpec so that FML can create and load the config file for us
-        //modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
 
         // Register modules
         ModItems.register(modEventBus);
@@ -89,7 +91,7 @@ public class RepAE2Bridge
         // LOGGER.info(Config.magicNumberIntroduction + Config.magicNumber);
 
         // Config.items.forEach((item) -> LOGGER.info("ITEM >> {}", item.toString()));
-
+        
         // Register the network element factory for the Replication mod
         // This is crucial for making the connection to the Replication network work
         event.enqueueWork(() -> {
@@ -112,23 +114,9 @@ public class RepAE2Bridge
 
     // Register bridge capabilities
     private void registerCapabilities(RegisterCapabilitiesEvent event) {
-        // Register the IInWorldGridNodeHost capability for the bridge block
-        event.registerBlock(
-            IN_WORLD_GRID_NODE_HOST,
-            (level, pos, state, be, context) -> {
-                if (be instanceof RepAE2BridgeBlockEntity bridge) {
-                    return bridge;
-                }
-                return null;
-            },
-            ModBlocks.REPAE2BRIDGE.get()
-        );
-
-        // Registra le capabilities del bridge per il trasferimento di item
+        // Delegate the capability registration to the RepAE2BridgeCapabilities class
+        // For Forge, registration is more complex and is done elsewhere
         RepAE2BridgeCapabilities.register(event);
-
-        // Log that capabilities have been registered
-        // LOGGER.info("AE2 Bridge capacities registered successfully");
     }
 
     // Add the example block item to the building blocks tab
@@ -148,20 +136,20 @@ public class RepAE2Bridge
         // LOGGER.info("RepAE2Bridge: Server starting");
         RepAE2BridgeBlockEntity.setWorldUnloading(false);
     }
-
+    
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event)
     {
         LOGGER.info("RepAE2Bridge: Server stopping, notifying bridges to prepare for unload");
-
+        
         // Set the static flag in the BlockEntity class
         RepAE2BridgeBlockEntity.setWorldUnloading(true);
-
+        
         LOGGER.info("RepAE2Bridge: All bridges notified of world unload");
     }
 
     // You can use EventBusSubscriber to automatically register all static methods in the class annotated with @SubscribeEvent
-    @EventBusSubscriber(modid = MOD_ID, bus = EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
+    @Mod.EventBusSubscriber(modid = MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
     public static class ClientModEvents
     {
         @SubscribeEvent
@@ -176,12 +164,40 @@ public class RepAE2Bridge
      */
     private void registerWithReplicationMod() {
         // LOGGER.info("Registering RepAE2Bridge with Replication mod");
-
-        // Add the mod namespace to the list of allowed namespaces
-        MatterPipeBlock.ALLOWED_CONNECTION_BLOCKS.add(block ->
-            block.getClass().getName().contains(MOD_ID)
-        );
-
-        // LOGGER.info("Successfully registered with Replication mod");
+        
+        try {
+            // First verify if the ALLOWED_CONNECTION_BLOCKS field exists
+            try {
+                var field = MatterPipeBlock.class.getDeclaredField("ALLOWED_CONNECTION_BLOCKS");
+                if (field != null) {
+                    field.setAccessible(true);
+                    var list = field.get(null);
+                    if (list != null) {
+                        // Use reflection to add our predicate
+                        java.lang.reflect.Method addMethod = list.getClass().getMethod("add", Object.class);
+                        addMethod.invoke(list, (java.util.function.Predicate<net.minecraft.world.level.block.Block>) block -> 
+                            block.getClass().getName().contains(MOD_ID)
+                        );
+                    }
+                }
+            } catch (NoSuchFieldException e) {
+                // If the field doesn't exist, try with the alternative API if it exists
+                try {
+                    var method = MatterPipeBlock.class.getMethod("registerExternalConnectableBlock", java.util.function.Predicate.class);
+                    method.invoke(null, (java.util.function.Predicate<net.minecraft.world.level.block.Block>) block -> 
+                        block.getClass().getName().contains(MOD_ID)
+                    );
+                    LOGGER.info("Registered with Replication mod using alternative API");
+                } catch (Exception ex) {
+                    LOGGER.error("No compatible registration method found in Replication mod: " + ex.getMessage());
+                }
+            } catch (Exception e) {
+                LOGGER.error("Error accessing ALLOWED_CONNECTION_BLOCKS: " + e.getMessage());
+            }
+            
+            // LOGGER.info("Successfully registered with Replication mod");
+        } catch (Exception e) {
+            LOGGER.error("Failed to register with Replication mod: " + e.getMessage());
+        }
     }
 }
