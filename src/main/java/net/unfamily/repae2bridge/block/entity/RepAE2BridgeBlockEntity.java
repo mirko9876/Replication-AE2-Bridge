@@ -1,4 +1,4 @@
-  package net.unfamily.repae2bridge.block.entity;
+package net.unfamily.repae2bridge.block.entity;
 
 import appeng.api.config.Actionable;
 import appeng.api.networking.GridHelper;
@@ -105,50 +105,50 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     // AE2 node for network connection
     private final IManagedGridNode mainNode = GridHelper.createManagedNode(this, new IGridNodeListener<RepAE2BridgeBlockEntity>() {
-        @Override
-        public void onSaveChanges(RepAE2BridgeBlockEntity nodeOwner, IGridNode node) {
-            nodeOwner.setChanged();
-        }
-
-        @Override
-        public void onStateChanged(RepAE2BridgeBlockEntity nodeOwner, IGridNode node, IGridNodeListener.State state) {
-            // Update the BlockEntity state when the node state changes
-            if (nodeOwner.level != null) {
-                nodeOwner.level.sendBlockUpdated(nodeOwner.worldPosition, nodeOwner.getBlockState(),
-                        nodeOwner.getBlockState(), 3);
-
-                // Also update the CONNECTED property state in the block
-                updateConnectedState();
-
-                // If the node is active, update patterns
-                if (state == IGridNodeListener.State.POWER && node.isActive()) {
-                    // LOGGER.info("Bridge: AE2 node active, requesting pattern update");
-                    ICraftingProvider.requestUpdate(mainNode);
-
-                    // Also request a storage update to show matter items
-                    IStorageProvider.requestUpdate(mainNode);
+                @Override
+                public void onSaveChanges(RepAE2BridgeBlockEntity nodeOwner, IGridNode node) {
+                    nodeOwner.setChanged();
                 }
-            }
-        }
 
-        @Override
-        public void onGridChanged(RepAE2BridgeBlockEntity nodeOwner, IGridNode node) {
-            // Update the BlockEntity state when the grid changes
-            if (nodeOwner.level != null) {
-                nodeOwner.level.sendBlockUpdated(nodeOwner.worldPosition, nodeOwner.getBlockState(),
-                        nodeOwner.getBlockState(), 3);
+                @Override
+                public void onStateChanged(RepAE2BridgeBlockEntity nodeOwner, IGridNode node, IGridNodeListener.State state) {
+                    // Update the BlockEntity state when the node state changes
+                    if (nodeOwner.level != null) {
+                        nodeOwner.level.sendBlockUpdated(nodeOwner.worldPosition, nodeOwner.getBlockState(),
+                                nodeOwner.getBlockState(), 3);
 
-                // Also update the CONNECTED property state in the block
-                updateConnectedState();
+                        // Also update the CONNECTED property state in the block
+                        updateConnectedState();
 
-                // Force a pattern update when the grid changes
-                ICraftingProvider.requestUpdate(mainNode);
+                        // If the node is active, update patterns
+                        if (state == IGridNodeListener.State.POWER && node.isActive()) {
+                            // LOGGER.info("Bridge: AE2 node active, requesting pattern update");
+                            ICraftingProvider.requestUpdate(mainNode);
 
-                // Also request a storage update to show matter items
-                IStorageProvider.requestUpdate(mainNode);
-            }
-        }
-    })
+                            // Also request a storage update to show matter items
+                            IStorageProvider.requestUpdate(mainNode);
+                        }
+                    }
+                }
+
+                @Override
+                public void onGridChanged(RepAE2BridgeBlockEntity nodeOwner, IGridNode node) {
+                    // Update the BlockEntity state when the grid changes
+                    if (nodeOwner.level != null) {
+                        nodeOwner.level.sendBlockUpdated(nodeOwner.worldPosition, nodeOwner.getBlockState(),
+                                nodeOwner.getBlockState(), 3);
+
+                        // Also update the CONNECTED property state in the block
+                        updateConnectedState();
+
+                        // Force a pattern update when the grid changes
+                        ICraftingProvider.requestUpdate(mainNode);
+
+                        // Also request a storage update to show matter items
+                        IStorageProvider.requestUpdate(mainNode);
+                    }
+                }
+            })
             .setVisualRepresentation(ModBlocks.REPAE2BRIDGE.get())
             .setInWorldNode(true)
             .setFlags(GridFlags.REQUIRE_CHANNEL)
@@ -220,9 +220,9 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     public RepAE2BridgeBlockEntity(BlockPos pos, BlockState blockState) {
         super((BasicTileBlock<RepAE2BridgeBlockEntity>) ModBlocks.REPAE2BRIDGE.get(),
-              ModBlockEntities.REPAE2BRIDGE_BE.get(),
-              pos,
-              blockState);
+                ModBlockEntities.REPAE2BRIDGE_BE.get(),
+                pos,
+                blockState);
 
         // Generate a unique identifier for this block
         this.blockId = UUID.randomUUID();
@@ -397,20 +397,25 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             // If there is an AE2 connection and the node is not created, initialize the node
             if (hasAE2Connection && !nodeCreated) {
                 try {
-                mainNode.create(level, worldPosition);
-                nodeCreated = true;
-                forceNeighborUpdates();
-                updateConnectedState();
-                ICraftingProvider.requestUpdate(mainNode);
-            } catch (Exception e) {
-                LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                shouldReconnect = true;
-            }
+                    // Debug log disabled for production
+                    // LOGGER.debug("Bridge: Initializing AE2 node from handleNeighborChanged");
+                    mainNode.create(level, worldPosition);
+                    nodeCreated = true;
 
-                // Force a pattern update
-                // Debug log disabled for production
-                // LOGGER.debug("Bridge: Requesting AE2 pattern update");
-                ICraftingProvider.requestUpdate(mainNode);
+                    // Notify adjacent blocks
+                    forceNeighborUpdates();
+
+                    // Update the connection state visually
+                    updateConnectedState();
+
+                    // Force a pattern update
+                    // Debug log disabled for production
+                    // LOGGER.debug("Bridge: Requesting AE2 pattern update");
+                    ICraftingProvider.requestUpdate(mainNode);
+                }catch (Exception e) {
+                    LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
+                    shouldReconnect = true;
+                }
             }
             // If the node exists, update only adjacent blocks
             else if (mainNode.getNode() != null) {
@@ -538,21 +543,21 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             LOGGER.info("Bridge: Reconnecting after world reload");
             if (mainNode.getNode() == null) {
                 try {
-                mainNode.create(level, worldPosition);
-                nodeCreated = true;
-                forceNeighborUpdates();
-                updateConnectedState();
-                ICraftingProvider.requestUpdate(mainNode);
-            } catch (Exception e) {
-                LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                shouldReconnect = true;
-            }
+                    mainNode.create(level, worldPosition);
+                    nodeCreated = true;
 
-                // Force pattern and storage updates
-                ICraftingProvider.requestUpdate(mainNode);
-                IStorageProvider.requestUpdate(mainNode);
+                    // Update connections
+                    forceNeighborUpdates();
+                    updateConnectedState();
 
-                shouldReconnect = false;
+                    // Force pattern and storage updates
+                    ICraftingProvider.requestUpdate(mainNode);
+                    IStorageProvider.requestUpdate(mainNode);
+                    shouldReconnect = false;
+                } catch (Exception e) {
+                    LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
+                    shouldReconnect = true;
+                }
             }
         }
 
@@ -661,10 +666,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
                                             // Create a replication task with the total quantity
                                             ReplicationTask task = new ReplicationTask(
-                                                pattern.getStack(),
-                                                count, // Use the total number of accumulated requests
-                                                IReplicationTask.Mode.MULTIPLE,
-                                                this.worldPosition
+                                                    pattern.getStack(),
+                                                    count, // Use the total number of accumulated requests
+                                                    IReplicationTask.Mode.MULTIPLE,
+                                                    this.worldPosition
                                             );
 
                                             // Add the task to the network
@@ -766,16 +771,11 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             if (!isActive() && shouldReconnect) {
                 try {
                     if (mainNode.getNode() == null && !nodeCreated) {
-                        try {
-                            mainNode.create(level, worldPosition);
-                            nodeCreated = true;
-                            forceNeighborUpdates();
-                            updateConnectedState();
-                            ICraftingProvider.requestUpdate(mainNode);
-                        } catch (Exception e) {
-                            LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                            shouldReconnect = true;
-                        }
+                        mainNode.create(level, worldPosition);
+                        nodeCreated = true;
+                        forceNeighborUpdates();
+                        updateConnectedState();
+                        ICraftingProvider.requestUpdate(mainNode);
                     } else {
                         forceNeighborUpdates();
                     }
@@ -850,16 +850,11 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             try {
                 GridHelper.onFirstTick(this, blockEntity -> {
                     if (shouldReconnect || !nodeCreated) {
-                        try {
-                            mainNode.create(level, worldPosition);
-                            nodeCreated = true;
-                            forceNeighborUpdates();
-                            updateConnectedState();
-                            ICraftingProvider.requestUpdate(mainNode);
-                        } catch (Exception e) {
-                            LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                            shouldReconnect = true;
-                        }
+                        mainNode.create(level, worldPosition);
+                        nodeCreated = true;
+                        forceNeighborUpdates();
+                        updateConnectedState();
+                        ICraftingProvider.requestUpdate(mainNode);
                         shouldReconnect = false;
                     }
                 });
@@ -1414,10 +1409,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     }
 
     public Future<ICraftingPlan> beginCraftingCalculation(Level level,
-            ICraftingSimulationRequester simRequester,
-            AEKey what,
-            long amount,
-            CalculationStrategy strategy) {
+                                                          ICraftingSimulationRequester simRequester,
+                                                          AEKey what,
+                                                          long amount,
+                                                          CalculationStrategy strategy) {
 
         if (what instanceof AEItemKey itemKey) {
             //LOGGER.info("Bridge: Crafting calculation for {} x{}", itemKey.getItem().getDescriptionId(), amount);
@@ -1478,10 +1473,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                         errorMsg.append("Not enough matter available. Missing:\n");
                                         for (Map.Entry<IMatterType, Long> entry : missingMatter.entrySet()) {
                                             errorMsg.append("- ")
-                                                  .append(entry.getValue())
-                                                  .append(" ")
-                                                  .append(entry.getKey().toString())
-                                                  .append("\n");
+                                                    .append(entry.getValue())
+                                                    .append(" ")
+                                                    .append(entry.getKey().toString())
+                                                    .append("\n");
                                         }
 
                                         //LOGGER.warn("Bridge: Request of {} x{} rejected due to lack of matter",
@@ -1489,7 +1484,7 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                         //LOGGER.warn("Bridge: Missing matter:\n{}", errorMsg);
 
                                         return CompletableFuture.failedFuture(
-                                            new IllegalStateException(errorMsg.toString()));
+                                                new IllegalStateException(errorMsg.toString()));
                                     }
 
                                     //LOGGER.info("Bridge: Matter sufficient for crafting {} x{}",
@@ -1541,7 +1536,7 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                     //LOGGER.error("Bridge: Impossible to calculate the required matter for {}",
                                     //    itemKey.getItem().getDescriptionId());
                                     return CompletableFuture.failedFuture(
-                                        new IllegalStateException("Cannot calculate required matter"));
+                                            new IllegalStateException("Cannot calculate required matter"));
                                 }
                             }
                         }
@@ -1549,18 +1544,18 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                 }
                 //LOGGER.warn("Bridge: No pattern found for {}", itemKey.getItem().getDescriptionId());
                 return CompletableFuture.failedFuture(
-                    new IllegalStateException("No pattern found for this item"));
+                        new IllegalStateException("No pattern found for this item"));
             } else {
                 //LOGGER.error("Bridge: No Replication network found");
                 return CompletableFuture.failedFuture(
-                    new IllegalStateException("No Replication network found"));
+                        new IllegalStateException("No Replication network found"));
             }
         }
 
         // If we get here, we can't craft this item
         //LOGGER.error("Bridge: Attempt to craft an invalid item");
         return CompletableFuture.failedFuture(
-            new IllegalStateException("Cannot craft this item"));
+                new IllegalStateException("Cannot craft this item"));
     }
 
     // Map IMatterType to virtual item
@@ -1580,13 +1575,13 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     // Utility to recognize virtual matter items
     private boolean isVirtualMatterItem(Item item) {
         return item == ModItems.EARTH_MATTER.get()
-            || item == ModItems.NETHER_MATTER.get()
-            || item == ModItems.ORGANIC_MATTER.get()
-            || item == ModItems.ENDER_MATTER.get()
-            || item == ModItems.METALLIC_MATTER.get()
-            || item == ModItems.PRECIOUS_MATTER.get()
-            || item == ModItems.LIVING_MATTER.get()
-            || item == ModItems.QUANTUM_MATTER.get();
+                || item == ModItems.NETHER_MATTER.get()
+                || item == ModItems.ORGANIC_MATTER.get()
+                || item == ModItems.ENDER_MATTER.get()
+                || item == ModItems.METALLIC_MATTER.get()
+                || item == ModItems.PRECIOUS_MATTER.get()
+                || item == ModItems.LIVING_MATTER.get()
+                || item == ModItems.QUANTUM_MATTER.get();
     }
 
     // Method to show virtual items in the AE2 terminal
@@ -1601,15 +1596,15 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         if (network != null) {
             // Recupera tutti i tipi di matter registrati
             List<IMatterType> matterTypes = List.of(
-                ReplicationRegistry.Matter.EMPTY.get(),
-                ReplicationRegistry.Matter.METALLIC.get(),
-                ReplicationRegistry.Matter.EARTH.get(),
-                ReplicationRegistry.Matter.NETHER.get(),
-                ReplicationRegistry.Matter.ORGANIC.get(),
-                ReplicationRegistry.Matter.ENDER.get(),
-                ReplicationRegistry.Matter.PRECIOUS.get(),
-                ReplicationRegistry.Matter.QUANTUM.get(),
-                ReplicationRegistry.Matter.LIVING.get()
+                    ReplicationRegistry.Matter.EMPTY.get(),
+                    ReplicationRegistry.Matter.METALLIC.get(),
+                    ReplicationRegistry.Matter.EARTH.get(),
+                    ReplicationRegistry.Matter.NETHER.get(),
+                    ReplicationRegistry.Matter.ORGANIC.get(),
+                    ReplicationRegistry.Matter.ENDER.get(),
+                    ReplicationRegistry.Matter.PRECIOUS.get(),
+                    ReplicationRegistry.Matter.QUANTUM.get(),
+                    ReplicationRegistry.Matter.LIVING.get()
             );
 
             for (IMatterType matterType : matterTypes) {
@@ -1744,15 +1739,15 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             if (network != null) {
                 // Get all registered matter types
                 List<IMatterType> matterTypes = List.of(
-                    ReplicationRegistry.Matter.EMPTY.get(),
-                    ReplicationRegistry.Matter.METALLIC.get(),
-                    ReplicationRegistry.Matter.EARTH.get(),
-                    ReplicationRegistry.Matter.NETHER.get(),
-                    ReplicationRegistry.Matter.ORGANIC.get(),
-                    ReplicationRegistry.Matter.ENDER.get(),
-                    ReplicationRegistry.Matter.PRECIOUS.get(),
-                    ReplicationRegistry.Matter.QUANTUM.get(),
-                    ReplicationRegistry.Matter.LIVING.get()
+                        ReplicationRegistry.Matter.EMPTY.get(),
+                        ReplicationRegistry.Matter.METALLIC.get(),
+                        ReplicationRegistry.Matter.EARTH.get(),
+                        ReplicationRegistry.Matter.NETHER.get(),
+                        ReplicationRegistry.Matter.ORGANIC.get(),
+                        ReplicationRegistry.Matter.ENDER.get(),
+                        ReplicationRegistry.Matter.PRECIOUS.get(),
+                        ReplicationRegistry.Matter.QUANTUM.get(),
+                        ReplicationRegistry.Matter.LIVING.get()
                 );
 
                 for (IMatterType matterType : matterTypes) {
@@ -1845,9 +1840,9 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     public int getActiveRequestsForItem(Item item) {
         Map<ItemStack, Integer> requests = patternRequestsBySource.getOrDefault(this.blockId, new HashMap<>());
         return requests.entrySet().stream()
-            .filter(entry -> entry.getKey().getItem() == item)
-            .mapToInt(Map.Entry::getValue)
-            .sum();
+                .filter(entry -> entry.getKey().getItem() == item)
+                .mapToInt(Map.Entry::getValue)
+                .sum();
     }
 
     /**
@@ -1888,22 +1883,10 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             if (o == null || getClass() != o.getClass()) return false;
             ItemWithSourceId that = (ItemWithSourceId) o;
             return ItemStack.matches(itemStack, that.itemStack) &&
-                   Objects.equals(sourceId, that.sourceId);
+                    Objects.equals(sourceId, that.sourceId);
         }
 
-        @Overridees().stream().mapToInt(Integer::intValue).sum();
-    }
-
-    /**
-     * Get the number of active requests for a specific item from this block
-     * @param item the item to check
-     * @return the number of active requests for the item from this block
-     */
-    public int getActiveRequestsForItem(Item item) {
-        Map<ItemStack, Integer> requests = patternRequestsBySource.getOrDefault(this.blockId, new HashMap<>());
-        return requests.entrySet().stream()
-            .filter(entry -> entry.getKey().getItem() == item)
-         
+        @Override
         public int hashCode() {
             return Objects.hash(itemStack.getItem(), sourceId);
         }
