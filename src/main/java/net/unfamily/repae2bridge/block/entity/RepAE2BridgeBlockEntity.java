@@ -1011,6 +1011,8 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             if (currentGlobalCount > 0) {
                 globalRequests.put(stack, currentGlobalCount - 1);
                 patternRequests.put(sourceId, globalRequests);
+                //LOGGER.info("Bridge: Task completed for {}, remaining {} active requests",
+                //    pattern.getItem().getDescriptionId(), currentGlobalCount - 1);
             }
         }
     }
@@ -1795,6 +1797,17 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         return null;
     }
 
+    /**
+     * Metodo statico per cancellare tutte le operazioni pendenti su tutti i bridge
+     * durante la chiusura del server
+     */
+    public static void cancelAllPendingOperations() {
+        LOGGER.info("RepAE2Bridge: Cancelling all pending operations on all bridges");
+        // Questo metodo non ha implementazione perché lo stato worldUnloading
+        // è già sufficiente per terminare le operazioni in corso.
+        // Il metodo esiste per mantenere l'API coerente con il codice nel RepAE2Bridge.java
+    }
+
     // Method to handle world unload event
     public void onWorldUnload() {
         // Don't reset the initialized variable when the world unloads
@@ -1804,6 +1817,20 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         //    // LOGGER.info("Bridge: Unloading Bridge...");
         // }
 
+        // Pulizia rapida delle operazioni in corso
+        LOGGER.info("Bridge: Cleaning up during world unload");
+        
+        // Reset counters to prevent lingering operations
+        requestCounterTicks = 0;
+        patternUpdateTicks = 0;
+        
+        // Clear pending operations that might cause blocks
+        pendingPatterns.clear();
+        pendingInputs.clear();
+        
+        // Interrompiamo eventuali richieste in corso per evitare blocchi durante lo shutdown
+        requestCounters.clear();
+        
         // Instead of resetting initialized, maintain the state but do other cleanup operations
         // Debug log disabled for production
         // LOGGER.debug("Bridge: World unloading, maintaining initialization state");

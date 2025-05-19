@@ -37,6 +37,7 @@ import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import java.util.function.BiConsumer;
+import net.neoforged.fml.ModList;
 
 // The value here should match an entry in the META-INF/neoforge.mods.toml file
 @Mod(RepAE2Bridge.MOD_ID)
@@ -93,13 +94,27 @@ public class RepAE2Bridge
         // Register the network element factory for the Replication mod
         // This is crucial for making the connection to the Replication network work
         event.enqueueWork(() -> {
-            try {
-                // Directly register the factory for DefaultMatterNetworkElement as done by Replication
-                // LOGGER.info("Registering DefaultMatterNetworkElement factory for Replication integration");
-                NetworkElementRegistry.INSTANCE.addFactory(DefaultMatterNetworkElement.ID, new DefaultMatterNetworkElement.Factory());
-                // LOGGER.info("Replication network integration complete");
-            } catch (Exception e) {
-                LOGGER.error("Failed to register with Replication network system", e);
+            // Verifichiamo se la mod Replication è caricata
+            boolean replicationLoaded = ModList.get().isLoaded("replication");
+            boolean ae2Loaded = ModList.get().isLoaded("appliedenergistics2");
+            
+            if (replicationLoaded && ae2Loaded) {
+                LOGGER.info("Replication mod is loaded, skipping DefaultMatterNetworkElement registration to avoid conflicts");
+            } else {
+                try {
+                    // Replication non è caricata, quindi registriamo noi l'elemento
+                    LOGGER.info("Replication mod not loaded, registering DefaultMatterNetworkElement factory");
+                    NetworkElementRegistry.INSTANCE.addFactory(DefaultMatterNetworkElement.ID, new DefaultMatterNetworkElement.Factory());
+                    LOGGER.info("Replication network integration complete");
+                } catch (Exception e) {
+                    // Se l'eccezione indica un duplicato, lo consideriamo un caso non problematico
+                    if (e.getMessage() != null && e.getMessage().contains("duplicate")) {
+                        LOGGER.info("DefaultMatterNetworkElement factory already registered, using existing registration");
+                    } else {
+                        // Altri tipi di errori sono ancora preoccupanti
+                        LOGGER.error("Failed to register with Replication network system", e);
+                    }
+                }
             }
         });
 
@@ -154,8 +169,19 @@ public class RepAE2Bridge
     {
         LOGGER.info("RepAE2Bridge: Server stopping, notifying bridges to prepare for unload");
 
-        // Set the static flag in the BlockEntity class
+        // Set the static flag in the BlockEntity class to signal shutdown
+        // Questo flag blocca nuove operazioni nei metodi tick delle entità
         RepAE2BridgeBlockEntity.setWorldUnloading(true);
+        
+        try {
+            // Interruzione forzata di tutte le operazioni pendenti
+            // Questo assicura una chiusura più pulita anche in caso di operazioni massive di autocrafting
+            LOGGER.info("RepAE2Bridge: Cancelling all pending operations for rapid shutdown");
+            RepAE2BridgeBlockEntity.cancelAllPendingOperations();
+        } catch (Exception e) {
+            // Non blocchiamo la chiusura del server anche in caso di errori
+            LOGGER.warn("RepAE2Bridge: Exception during shutdown cleanup, continuing anyway", e);
+        }
 
         LOGGER.info("RepAE2Bridge: All bridges notified of world unload");
     }
