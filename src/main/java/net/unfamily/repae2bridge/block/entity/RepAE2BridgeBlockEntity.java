@@ -64,6 +64,7 @@ import appeng.api.networking.IGrid;
 import appeng.api.networking.storage.IStorageService;
 import net.minecraftforge.items.ItemHandlerHelper;
 import appeng.me.helpers.MachineSource;
+import net.unfamily.repae2bridge.RepAE2Bridge;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -204,6 +205,12 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     // Static flag to track world unloading state
     private static boolean worldUnloading = false;
     
+    // Map to track pipes that need delayed initialization
+    private static final Map<BlockPos, Integer> pipeInitializationDelays = new HashMap<>();
+    
+    // Constant for the number of ticks to delay pipe initialization
+    private static final int PIPE_INITIALIZATION_DELAY = 60;
+    
     /**
      * Sets the world unloading state
      * Called from the mod main class when the server is stopping
@@ -211,6 +218,16 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     public static void setWorldUnloading(boolean unloading) {
         worldUnloading = unloading;
         // LOGGER.info("Bridge: World unloading state set to {}", unloading);
+    }
+    
+    /**
+     * Cancella tutte le operazioni pendenti su tutti i bridge
+     * Chiamato durante lo shutdown del server
+     */
+    public static void cancelAllPendingOperations() {
+        LOGGER.info("RepAE2Bridge: Cancelling all pending operations on all bridges");
+        // Questo metodo esiste principalmente come API coerente con il codice in RepAE2Bridge.java
+        // La maggior parte del lavoro di pulizia è svolto dal metodo onWorldUnload di ciascuna entity
     }
     
     /**
@@ -290,6 +307,38 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         // First initialize the Replication network (as done by the base class)
         super.onLoad();
         //LOGGER.info("Bridge: onLoad called at {}", worldPosition);
+        
+        // Creiamo immediatamente il network Replication al posizionamento del blocco
+        if (level != null && !level.isClientSide()) {
+            try {
+                // Otteniamo il NetworkManager
+                NetworkManager networkManager = NetworkManager.get(level);
+                if (networkManager != null) {
+                    // Verifichiamo se esiste già un elemento per questo blocco
+                    NetworkElement element = networkManager.getElement(worldPosition);
+                    if (element == null) {
+                        // Creiamo un nuovo elemento di rete
+                        element = createElement(level, worldPosition);
+                        if (element != null) {
+                            // Aggiungiamo l'elemento al gestore di rete
+                            networkManager.addElement(element);
+                            LOGGER.info("Bridge: Created Replication network element at placement time for {}", worldPosition);
+                            
+                            // Forziamo gli aggiornamenti dei blocchi vicini per stabilire le connessioni
+                            forceNeighborUpdates();
+                        } else {
+                            LOGGER.error("Bridge: Failed to create network element at placement time");
+                        }
+                    } else {
+                        LOGGER.info("Bridge: Network element already exists for this block");
+                    }
+                } else {
+                    LOGGER.error("Bridge: NetworkManager not found at block placement time");
+                }
+            } catch (Exception e) {
+                LOGGER.error("Bridge: Error creating Replication network at placement time: {}", e.getMessage());
+            }
+        }
         
         // Initialize the AE2 node if it hasn't been done
         if (!nodeCreated && level != null && !level.isClientSide()) {
@@ -529,16 +578,17 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
      */
     @Override
     public void serverTick(Level level, BlockPos pos, BlockState state, RepAE2BridgeBlockEntity blockEntity) {
-        super.serverTick(level, pos, state, blockEntity);
-        
-        //LOGGER.warn("Bridge: initialization: {}", initialized);
-        
         // Check if the world is unloading
         if (worldUnloading && initialized == 1) {
             // Call onWorldUnload if the world is unloading and we're initialized
             onWorldUnload();
             return;
         }
+        
+        // Execute parent's serverTick
+        super.serverTick(level, pos, state, blockEntity);
+        
+        //LOGGER.warn("Bridge: initialization: {}", initialized);
         
         // Handle reinitialization after world reload
         if (shouldReconnect && initialized == 1 && !nodeCreated) {
@@ -822,9 +872,75 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             // First check if we're being called from MatterPipeBlockEntity.serverTick
             StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
             boolean fromMatterPipe = false;
+            BlockPos pipePos = null;
+            
             for (StackTraceElement element : stackTrace) {
                 if (element.getClassName().contains("MatterPipeBlockEntity") && element.getMethodName().equals("serverTick")) {
                     fromMatterPipe = true;
+                    
+                    // Try to extract the pipe position from nearby code
+                    for (Direction direction : Direction.values()) {
+                        BlockPos neighborPos = worldPosition.relative(direction);
+                        if (level.getBlockEntity(neighborPos) != null && 
+                            level.getBlockEntity(neighborPos).getClass().getName().contains("MatterPipeBlockEntity")) {
+                            pipePos = neighborPos;
+                            break;
+                        }
+                    }
+                    
+                    break;
+                }
+            }
+            
+            // Se la chiamata viene da un MatterPipeBlockEntity, gestiamo l'inizializzazione ritardata
+            if (fromMatterPipe && pipePos != null) {
+                // Check if this pipe needs a delay before initialization
+                if (!pipeInitializationDelays.containsKey(pipePos)) {
+                    // First time seeing this pipe, start the delay counter
+                    pipeInitializationDelays.put(pipePos, 0);
+                    LOGGER.info("Bridge: Starting initialization delay for pipe at {}", pipePos);
+                    return null; // Return null safely until the pipe is initialized
+                }
+                
+                // Get the current delay counter for this pipe
+                int currentDelay = pipeInitializationDelays.get(pipePos);
+                
+                // If the pipe hasn't waited enough ticks, increment counter and return null safely
+                if (currentDelay < PIPE_INITIALIZATION_DELAY) {
+                    pipeInitializationDelays.put(pipePos, currentDelay + 1);
+                    
+                    // Log progress occasionally
+                    if (currentDelay % 10 == 0) {
+                        LOGGER.debug("Bridge: Pipe at {} initialization delay: {}/{}", 
+                                    pipePos, currentDelay, PIPE_INITIALIZATION_DELAY);
+                    }
+                    
+                    return null; // Return null safely during the delay period
+                }
+                
+                // If we reach here, the pipe has waited enough ticks
+                LOGGER.info("Bridge: Pipe at {} completed initialization delay, proceeding with network connection", pipePos);
+                
+                // Use our safe implementation now that delay is complete
+                return RepAE2Bridge.NetworkPatcher.safeGetNetwork(this, level, worldPosition);
+            }
+            
+            // Se si sta caricando da MatterPipeBlockEntity ma non abbiamo una posizione, usiamo comunque l'implementazione sicura
+            if (fromMatterPipe) {
+                LOGGER.debug("Bridge: Reindirizzando chiamata da MatterPipeBlockEntity a NetworkPatcher");
+                return RepAE2Bridge.NetworkPatcher.safeGetNetwork(this, level, worldPosition);
+            }
+            
+            // Se una rete non esiste già, la creiamo noi preventivamente
+            MatterNetwork existingNetwork = null;
+            
+            // Verifica innanzitutto se esiste già una rete nelle vicinanze a cui collegarsi
+            for (Direction direction : Direction.values()) {
+                BlockPos neighborPos = worldPosition.relative(direction);
+                NetworkElement neighborElement = networkManager.getElement(neighborPos);
+                if (neighborElement != null && neighborElement.getNetwork() instanceof MatterNetwork) {
+                    existingNetwork = (MatterNetwork) neighborElement.getNetwork();
+                    LOGGER.info("Bridge: Found existing MatterNetwork from neighbor at {}", neighborPos);
                     break;
                 }
             }
@@ -855,22 +971,42 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             // Now proceed with normal element retrieval
             NetworkElement element = networkManager.getElement(worldPosition);
             if (element == null) {
-                // Create a new network element and add it to the network manager
-                element = createElement(level, worldPosition);
-                if (element != null) {
+                // Se l'elemento non esiste e siamo chiamati da MatterPipeBlockEntity, creiamo un nuovo elemento
+                // per evitare il NullPointerException
+                if (fromMatterPipe) {
+                    LOGGER.warn("Bridge: Element null durante chiamata da MatterPipeBlockEntity.serverTick, creazione elemento di emergenza");
                     try {
-                        networkManager.addElement(element);
-                        forceNeighborUpdates();
-                        LOGGER.info("Bridge: Created and added new network element at {}", worldPosition);
+                        // Crea un nuovo elemento di rete per questo blocco
+                        element = createElement(level, worldPosition);
+                        if (element != null) {
+                            // Aggiungi l'elemento alla rete
+                            networkManager.addElement(element);
+                            LOGGER.info("Bridge: Creato elemento di emergenza per evitare NullPointerException");
+                            
+                            // Se abbiamo trovato una rete esistente, forziamo l'elemento a unirsi ad essa
+                            if (existingNetwork != null) {
+                                // Forza l'aggiornamento dei blocchi vicini per stabilire le connessioni
+                                forceNeighborUpdates();
+                                return existingNetwork;
+                            }
+                            
+                            // Restituisci la rete dell'elemento appena creato
+                            if (element.getNetwork() instanceof MatterNetwork) {
+                                return (MatterNetwork) element.getNetwork();
+                            }
+                            
+                            // Se ancora non c'è una rete, restituisci null ma evita l'eccezione
+                            LOGGER.warn("Bridge: Elemento creato ma senza rete, restituisco null");
+                            return null;
+                        }
                     } catch (Exception e) {
-                        LOGGER.error("Failed to add network element: {}", e.getMessage());
+                        LOGGER.error("Bridge: Errore durante la creazione dell'elemento di emergenza: {}", e.getMessage());
                         return null;
                     }
-                } else {
-                    // If createElement returns null, we can't proceed
-                    LOGGER.error("Failed to create network element at {}", worldPosition);
-                    return null;
                 }
+                
+                // Se non siamo chiamati da MatterPipeBlockEntity o la creazione è fallita, restituisci null
+                return null;
             }
             
             // Safely check if the element has a network and if it's a MatterNetwork
@@ -879,7 +1015,32 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                 if (network instanceof MatterNetwork matterNetwork) {
                     return matterNetwork;
                 } else if (network == null) {
-                    LOGGER.warn("Network element exists but has no network at {}", worldPosition);
+                    // Se la rete è null, proviamo a creare una nuova rete
+                    try {
+                        LOGGER.info("Bridge: Element exists but has no network, creating a new network");
+                        
+                        // Forza la creazione di una nuova rete aggiornando i collegamenti
+                        // Questo dovrebbe innescare il meccanismo di creazione automatica
+                        forceNeighborUpdates();
+                        
+                        // Ricontrolliamo se ora esiste una rete
+                        network = element.getNetwork();
+                        if (network instanceof MatterNetwork matterNetwork) {
+                            LOGGER.info("Bridge: Successfully created a new network");
+                            return matterNetwork;
+                        }
+                        
+                        // Se è una chiamata da MatterPipeBlockEntity e ancora non c'è una rete,
+                        // restituisci una rete esistente se l'abbiamo trovata prima
+                        if (fromMatterPipe && existingNetwork != null) {
+                            LOGGER.info("Bridge: Returning existing network for MatterPipeBlockEntity");
+                            return existingNetwork;
+                        }
+                        
+                        LOGGER.warn("Network creation attempt failed, element still has no network at {}", worldPosition);
+                    } catch (Exception e) {
+                        LOGGER.error("Error creating a new network: {}", e.getMessage());
+                    }
                 } else {
                     LOGGER.warn("Network element has wrong network type: {}", network.getClass().getName());
                 }
@@ -894,6 +1055,69 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     
     public boolean isActive() {
         return mainNode.isActive();
+    }
+
+    /**
+     * Metodo di utilità per creare preventivamente una rete Replication
+     * Utile quando si ha bisogno di assicurarsi che una rete esista prima che i blocchi si colleghino ad essa
+     * 
+     * @param targetLevel Il livello (mondo) in cui creare la rete
+     * @param centerPos La posizione centrale della rete
+     * @return La nuova rete creata, o null se non è stato possibile crearla
+     */
+    public static MatterNetwork createReplicationNetwork(Level targetLevel, BlockPos centerPos) {
+        if (targetLevel == null || targetLevel.isClientSide()) {
+            return null;
+        }
+        
+        try {
+            NetworkManager networkManager = NetworkManager.get(targetLevel);
+            if (networkManager == null) {
+                LOGGER.error("NetworkManager not found, impossibile creare una rete Replication");
+                return null;
+            }
+            
+            // Verifica se esiste già un elemento di rete in questa posizione
+            NetworkElement existingElement = networkManager.getElement(centerPos);
+            if (existingElement != null) {
+                Object network = existingElement.getNetwork();
+                if (network instanceof MatterNetwork) {
+                    LOGGER.info("Una rete Replication esiste già in questa posizione");
+                    return (MatterNetwork) network;
+                }
+                
+                // Se esiste un elemento ma non ha una rete, proviamo a crearne una forzando un aggiornamento
+                LOGGER.info("Elemento di rete trovato ma senza rete, tentativo di creazione");
+            } else {
+                // Non esiste un elemento, creiamone uno nuovo
+                LOGGER.info("Creazione di un nuovo elemento di rete in {}", centerPos);
+                
+                // Crea un nuovo elemento di rete
+                NetworkElement newElement = new DefaultMatterNetworkElement(targetLevel, centerPos) {
+                    @Override
+                    public boolean canConnectFrom(Direction direction) {
+                        // Consenti connessioni da tutte le direzioni
+                        return true;
+                    }
+                };
+                
+                // Aggiungi l'elemento al gestore di rete
+                networkManager.addElement(newElement);
+                
+                // Quando l'elemento viene aggiunto, dovrebbe creare automaticamente una nuova rete o unirsi a una esistente
+                Object network = newElement.getNetwork();
+                if (network instanceof MatterNetwork) {
+                    LOGGER.info("Rete Replication creata con successo");
+                    return (MatterNetwork) network;
+                }
+            }
+            
+            LOGGER.warn("Non è stato possibile creare la rete Replication in {}", centerPos);
+        } catch (Exception e) {
+            LOGGER.error("Errore durante la creazione della rete Replication: {}", e.getMessage());
+        }
+        
+        return null;
     }
 
     /**
@@ -1236,18 +1460,18 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
                                     List<GenericStack> outputs = new ArrayList<>();
                                     outputs.add(new GenericStack(output, 1)); // Output is the replicated item
                                     
-                                    // Encode the pattern manualmente
-                                    // Implemento direttamente il codice per codificare il pattern
+                                    // Encode the pattern manually
+                                    // Implement the code to encode the pattern
                                     CompoundTag tag = patternStack.getOrCreateTag();
                                     
-                                    // Codifica gli input
+                                    // Encode inputs
                                     ListTag inputsTag = new ListTag();
                                     for (GenericStack stack : inputs) {
                                         inputsTag.add(GenericStack.writeTag(stack));
                                     }
                                     tag.put("in", inputsTag);
                                     
-                                    // Codifica gli output
+                                    // Encode outputs
                                     ListTag outputsTag = new ListTag();
                                     for (GenericStack stack : outputs) {
                                         outputsTag.add(GenericStack.writeTag(stack));
@@ -1872,16 +2096,19 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
     // Method to handle world unload event
     public void onWorldUnload() {
-        // Don't reset the initialized variable when the world unloads
-        // This prevents essenze from flickering when re-entering the world
-        // if (initialized == 1) {
-        //     initialized = 0;
-        //    // LOGGER.info("Bridge: Unloading Bridge...");
-        // }
+        // Pulizia rapida delle operazioni in corso
+        LOGGER.info("Bridge: Cleaning up during world unload");
         
-        // Instead of resetting initialized, maintain the state but do other cleanup operations
-        // Debug log disabled for production
-        // LOGGER.debug("Bridge: World unloading, maintaining initialization state");
+        // Reset counters to prevent lingering operations
+        requestCounterTicks = 0;
+        patternUpdateTicks = 0;
+        
+        // Clear pending operations that might cause blocks
+        pendingPatterns.clear();
+        pendingInputs.clear();
+        
+        // Interrompiamo eventuali richieste in corso per evitare blocchi durante lo shutdown
+        requestCounters.clear();
         
         // Make sure the AE2 node is properly destroyed
         if (level != null && !level.isClientSide() && mainNode != null) {

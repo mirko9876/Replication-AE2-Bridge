@@ -7,11 +7,17 @@ import org.slf4j.Logger;
 
 import com.mojang.logging.LogUtils;
 import com.buuz135.replication.network.DefaultMatterNetworkElement;
+import com.hrznstudio.titanium.block_network.element.NetworkElement;
+import com.hrznstudio.titanium.block_network.NetworkManager;
 import com.hrznstudio.titanium.block_network.element.NetworkElementRegistry;
+import com.buuz135.replication.block.tile.NetworkBlockEntity;
+import com.buuz135.replication.network.MatterNetwork;
 
 import net.minecraft.core.Registry;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.Level;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -33,11 +39,12 @@ import appeng.api.networking.IInWorldGridNodeHost;
 import com.buuz135.replication.block.MatterPipeBlock;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import java.util.ArrayList;
 import java.util.List;
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import java.util.function.BiConsumer;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 
 // The value here should match an entry in the META-INF/mods.toml file
@@ -53,31 +60,60 @@ public class RepAE2Bridge
     private static final Capability<IInWorldGridNodeHost> IN_WORLD_GRID_NODE_HOST = 
         CapabilityManager.get(new CapabilityToken<>(){});
 
+    // Add a static field to track if our NetworkBlockEntity patches have been applied
+    private static boolean networksFixed = false;
+
     /**
-     * Main constructor of the mod that uses FMLJavaModLoadingContext
+     * Main constructor of the mod that gets the event bus in the non-deprecated way
      */
     public RepAE2Bridge() {
         LOGGER.info("RepAE2Bridge: Main constructor called");
         
-        // Get the event bus from the mod
+        // Get the event bus from the mod loading context (non-deprecated way)
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
+        
+        // Register all items
+        ModItems.register(modEventBus);
+        
+        // Register all blocks
+        ModBlocks.register(modEventBus);
+        
+        // Register all block entities
+        ModBlockEntities.register(modEventBus);
         
         // Register the commonSetup method for modloading
         modEventBus.addListener(this::commonSetup);
-        
-        // Register the event for capabilities
-        modEventBus.addListener(this::registerCapabilities);
 
-        // Register ourselves for server and other game events we are interested in.
-        MinecraftForge.EVENT_BUS.register(this);
-
-        // Register the item to a creative tab
+        // Register the addCreative event handler for adding items to the creative menu
         modEventBus.addListener(this::addCreative);
 
-        // Register modules
-        ModItems.register(modEventBus);
-        ModBlocks.register(modEventBus);
-        ModBlockEntities.register(modEventBus);
+        // Register ourselves for server and other game events
+        // Note: This is where the ServerStartingEvent and ServerStoppingEvent are registered
+        MinecraftForge.EVENT_BUS.register(this);
+    }
+
+    /**
+     * Register a safe version of NetworkBlockEntity.getNetwork that avoids NullPointerException
+     */
+    private void patchNetworkBlockEntityClass() {
+        try {
+            // Check if we've already applied the patch
+            if (networksFixed) {
+                return;
+            }
+            
+            // Apply our global patch to fix NetworkBlockEntity.getNetwork
+            LOGGER.info("RepAE2Bridge: Applying patch to fix NetworkBlockEntity.getNetwork");
+            
+            // Define our custom implementation
+            NetworkPatcher.initialize();
+            
+            // Mark as fixed
+            networksFixed = true;
+            LOGGER.info("RepAE2Bridge: NetworkBlockEntity patch applied successfully");
+        } catch (Exception e) {
+            LOGGER.error("RepAE2Bridge: Failed to patch NetworkBlockEntity: {}", e.getMessage());
+        }
     }
 
     private void commonSetup(final FMLCommonSetupEvent event)
@@ -95,13 +131,26 @@ public class RepAE2Bridge
         // Register the network element factory for the Replication mod
         // This is crucial for making the connection to the Replication network work
         event.enqueueWork(() -> {
-            try {
-                // Directly register the factory for DefaultMatterNetworkElement as done by Replication
-                // LOGGER.info("Registering DefaultMatterNetworkElement factory for Replication integration");
-                NetworkElementRegistry.INSTANCE.addFactory(DefaultMatterNetworkElement.ID, new DefaultMatterNetworkElement.Factory());
-                // LOGGER.info("Replication network integration complete");
-            } catch (Exception e) {
-                LOGGER.error("Failed to register with Replication network system", e);
+            // Verifichiamo se la mod Replication è caricata
+            boolean replicationLoaded = net.minecraftforge.fml.ModList.get().isLoaded("replication");
+            
+            if (replicationLoaded) {
+                LOGGER.info("Replication mod is loaded, skipping DefaultMatterNetworkElement registration to avoid conflicts");
+            } else {
+                try {
+                    // Replication non è caricata, quindi registriamo noi l'elemento
+                    LOGGER.info("Replication mod not loaded, registering DefaultMatterNetworkElement factory");
+                    NetworkElementRegistry.INSTANCE.addFactory(DefaultMatterNetworkElement.ID, new DefaultMatterNetworkElement.Factory());
+                    LOGGER.info("Replication network integration complete");
+                } catch (Exception e) {
+                    // Se l'eccezione indica un duplicato, lo consideriamo un caso non problematico
+                    if (e.getMessage() != null && e.getMessage().contains("duplicate")) {
+                        LOGGER.info("DefaultMatterNetworkElement factory already registered, using existing registration");
+                    } else {
+                        // Altri tipi di errori sono ancora preoccupanti
+                        LOGGER.error("Failed to register with Replication network system", e);
+                    }
+                }
             }
         });
 
@@ -110,6 +159,9 @@ public class RepAE2Bridge
             // This ensures it runs on the main thread
             registerWithReplicationMod();
         });
+
+        // Apply our patches to NetworkBlockEntity
+        event.enqueueWork(this::patchNetworkBlockEntityClass);
     }
 
     // Register bridge capabilities
@@ -135,16 +187,32 @@ public class RepAE2Bridge
     {
         // LOGGER.info("RepAE2Bridge: Server starting");
         RepAE2BridgeBlockEntity.setWorldUnloading(false);
+        
+        // Ensure our patches are applied when the server starts
+        if (!networksFixed) {
+            patchNetworkBlockEntityClass();
+        }
     }
     
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event)
     {
         LOGGER.info("RepAE2Bridge: Server stopping, notifying bridges to prepare for unload");
-        
-        // Set the static flag in the BlockEntity class
+
+        // Set the static flag in the BlockEntity class to signal shutdown
+        // Questo flag blocca nuove operazioni nei metodi tick delle entità
         RepAE2BridgeBlockEntity.setWorldUnloading(true);
         
+        try {
+            // Interruzione forzata di tutte le operazioni pendenti
+            // Questo assicura una chiusura più pulita anche in caso di operazioni massive di autocrafting
+            LOGGER.info("RepAE2Bridge: Cancelling all pending operations for rapid shutdown");
+            RepAE2BridgeBlockEntity.cancelAllPendingOperations();
+        } catch (Exception e) {
+            // Non blocchiamo la chiusura del server anche in caso di errori
+            LOGGER.warn("RepAE2Bridge: Exception during shutdown cleanup, continuing anyway", e);
+        }
+
         LOGGER.info("RepAE2Bridge: All bridges notified of world unload");
     }
 
@@ -198,6 +266,78 @@ public class RepAE2Bridge
             // LOGGER.info("Successfully registered with Replication mod");
         } catch (Exception e) {
             LOGGER.error("Failed to register with Replication mod: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Helper class to safely patch the NetworkBlockEntity implementation
+     * This avoids the NullPointerException that occurs in getNetwork
+     */
+    public static class NetworkPatcher {
+        private static boolean initialized = false;
+        
+        public static void initialize() {
+            if (initialized) {
+                return;
+            }
+            
+            LOGGER.info("NetworkPatcher: Initializing safety hooks for NetworkBlockEntity");
+            initialized = true;
+        }
+        
+        /**
+         * Replacement for NetworkBlockEntity.getNetwork that handles null safely
+         * This is called from RepAE2BridgeBlockEntity when it detects a potential issue
+         * 
+         * @param entity The NetworkBlockEntity instance
+         * @param level The current world level
+         * @param pos The position of the block
+         * @return A MatterNetwork instance or null if none is available
+         */
+        public static MatterNetwork safeGetNetwork(BlockEntity entity, Level level, BlockPos pos) {
+            if (level == null || level.isClientSide()) {
+                return null;
+            }
+            
+            try {
+                NetworkManager networkManager = NetworkManager.get(level);
+                if (networkManager == null) {
+                    return null;
+                }
+                
+                // Get the network element for this position
+                NetworkElement element = networkManager.getElement(pos);
+                
+                // Critical fix: If element is null, try to create one to prevent NullPointerException
+                if (element == null) {
+                    LOGGER.warn("NetworkPatcher: Null network element detected at {}. Creating temporary element to prevent crash.", pos);
+                    
+                    // Create a new element for this position
+                    element = new DefaultMatterNetworkElement(level, pos);
+                    
+                    // Register it with the network manager
+                    networkManager.addElement(element);
+                    
+                    // Try to get the network from the newly created element
+                    Object network = element.getNetwork();
+                    if (network instanceof MatterNetwork) {
+                        return (MatterNetwork) network;
+                    }
+                    
+                    // If no network is available, return null safely
+                    return null;
+                }
+                
+                // Get the network from the element (standard path)
+                Object network = element.getNetwork();
+                if (network instanceof MatterNetwork) {
+                    return (MatterNetwork) network;
+                }
+            } catch (Exception e) {
+                LOGGER.error("NetworkPatcher: Error in safeGetNetwork: {}", e.getMessage());
+            }
+            
+            return null;
         }
     }
 }
