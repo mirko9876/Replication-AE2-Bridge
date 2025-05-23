@@ -279,6 +279,90 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         }
         return false;
     }
+    
+    /**
+     * Verifica se il nodo AE2 è valido e inizializzato correttamente
+     * @return true se il nodo è valido, false altrimenti
+     */
+    private boolean isNodeValid() {
+        try {
+            IGridNode node = mainNode.getNode();
+            if (node == null) {
+                return false;
+            }
+            
+            // Verifica che il nodo abbia le proprietà essenziali
+            return node.getLevel() != null && node.getOwner() != null;
+        } catch (Exception e) {
+            LOGGER.debug("Bridge: Node validation failed: {}", e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Inizializza o reinizializza il nodo AE2 in modo sicuro
+     * @return true se l'inizializzazione è riuscita, false altrimenti
+     */
+    private boolean safeInitializeNode() {
+        try {
+            // Se il nodo esiste ma non è valido, distruggilo prima
+            if (mainNode.getNode() != null && !isNodeValid()) {
+                LOGGER.debug("Bridge: Destroying invalid node before recreation");
+                mainNode.destroy();
+                nodeCreated = false;
+                Thread.sleep(50); // Breve pausa per assicurarsi che la distruzione sia completata
+            }
+            
+            // Se il nodo non esiste, crealo
+            if (mainNode.getNode() == null) {
+                LOGGER.debug("Bridge: Creating new AE2 node");
+                mainNode.create(level, worldPosition);
+                nodeCreated = true;
+                
+                // Aggiorna le connessioni
+                forceNeighborUpdates();
+                updateConnectedState();
+                
+                // Richiedi aggiornamenti
+                ICraftingProvider.requestUpdate(mainNode);
+                IStorageProvider.requestUpdate(mainNode);
+                
+                LOGGER.info("Bridge: AE2 node successfully initialized");
+                return true;
+            } else if (isNodeValid()) {
+                // Il nodo esiste ed è valido
+                nodeCreated = true;
+                LOGGER.debug("Bridge: Node already exists and is valid");
+                return true;
+            }
+            
+            return false;
+            
+        } catch (IllegalStateException e) {
+            if (e.getMessage().contains("already been initialized")) {
+                // Il nodo è già inizializzato, aggiorna i flag
+                nodeCreated = true;
+                LOGGER.warn("Bridge: Node was already initialized: {}", e.getMessage());
+                
+                // Esegui comunque gli aggiornamenti delle connessioni
+                try {
+                    forceNeighborUpdates();
+                    updateConnectedState();
+                    ICraftingProvider.requestUpdate(mainNode);
+                    IStorageProvider.requestUpdate(mainNode);
+                } catch (Exception updateEx) {
+                    LOGGER.error("Bridge: Failed to update connections: {}", updateEx.getMessage());
+                }
+                return true;
+            } else {
+                LOGGER.error("Bridge: Failed to initialize node with IllegalStateException: {}", e.getMessage());
+                return false;
+            }
+        } catch (Exception e) {
+            LOGGER.error("Bridge: Failed to initialize node: {}", e.getMessage());
+            return false;
+        }
+    }
 
     @Override
     protected NetworkElement createElement(Level level, BlockPos pos) {
@@ -340,24 +424,18 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             }
         }
         
-        // Initialize the AE2 node if it hasn't been done
-        if (!nodeCreated && level != null && !level.isClientSide()) {
-            try {
-                mainNode.create(level, worldPosition);
-                nodeCreated = true;
-                forceNeighborUpdates();
-                updateConnectedState();
-                ICraftingProvider.requestUpdate(mainNode);
-            } catch (Exception e) {
-                LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                shouldReconnect = true;
+        // Initialize the AE2 node using the safe method
+        if (level != null && !level.isClientSide()) {
+            if (!nodeCreated || !isNodeValid()) {
+                LOGGER.debug("Bridge: Attempting safe node initialization in onLoad");
+                boolean success = safeInitializeNode();
+                if (!success) {
+                    shouldReconnect = true;
+                    LOGGER.warn("Bridge: Node initialization failed in onLoad, will retry later");
+                }
+            } else {
+                LOGGER.debug("Bridge: Node already valid in onLoad");
             }
-        }
-        // Reset the flag if it was loaded but the node no longer exists
-        else if (nodeCreated && mainNode.getNode() == null) {
-            // LOGGER.warn("Bridge: Existing node not found, requesting reconnection");
-            nodeCreated = false;
-            shouldReconnect = true;
         }
     }
     
@@ -445,27 +523,13 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
             // Check if there is an AE2 controller in the network
             boolean hasAE2Connection = hasAE2NetworkConnection();
             
-            // If there is an AE2 connection and the node is not created, initialize the node
-            if (hasAE2Connection && !nodeCreated) {
-                // Debug log disabled for production
-                // LOGGER.debug("Bridge: Initializing AE2 node from handleNeighborChanged");
-                try {
-                    mainNode.create(level, worldPosition);
-                    nodeCreated = true;
-                    
-                    // Notify adjacent blocks
-                    forceNeighborUpdates();
-                    
-                    // Update the connection state visually
-                    updateConnectedState();
-
-                    // Force a pattern update
-                    // Debug log disabled for production
-                    // LOGGER.debug("Bridge: Requesting AE2 pattern update");
-                    ICraftingProvider.requestUpdate(mainNode);
-                } catch (Exception e) {
-                    LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
+            // If there is an AE2 connection and the node is not properly initialized, initialize it
+            if (hasAE2Connection && (!nodeCreated || !isNodeValid())) {
+                LOGGER.debug("Bridge: Initializing AE2 node from handleNeighborChanged");
+                boolean success = safeInitializeNode();
+                if (!success) {
                     shouldReconnect = true;
+                    LOGGER.warn("Bridge: Node initialization failed in handleNeighborChanged");
                 }
             } 
             // If the node exists, update only adjacent blocks
@@ -590,27 +654,18 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         
         //LOGGER.warn("Bridge: initialization: {}", initialized);
         
-        // Handle reinitialization after world reload
-        if (shouldReconnect && initialized == 1 && !nodeCreated) {
-            // LOGGER.info("Bridge: Reconnecting after world reload");
-            if (mainNode.getNode() == null) {
-                try {
-                    mainNode.create(level, worldPosition);
-                    nodeCreated = true;
-                    
-                    // Update connections
-                    forceNeighborUpdates();
-                    updateConnectedState();
-                    
-                    // Force pattern and storage updates
-                    ICraftingProvider.requestUpdate(mainNode);
-                    IStorageProvider.requestUpdate(mainNode);
-                    
-                    shouldReconnect = false;
-                } catch (Exception e) {
-                LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                shouldReconnect = true;
-                }
+        // Handle reinitialization after world reload with improved robustness
+        if (shouldReconnect && initialized == 1) {
+            LOGGER.debug("Bridge: Attempting reconnection after world reload");
+            
+            // Usa il metodo di utilità per la riconnessione sicura
+            boolean success = safeInitializeNode();
+            if (success) {
+                shouldReconnect = false;
+                LOGGER.info("Bridge: Successfully reconnected AE2 node after world reload");
+            } else {
+                LOGGER.warn("Bridge: Failed to reconnect AE2 node, will retry next tick");
+                // shouldReconnect rimane true per tentare di nuovo al prossimo tick
             }
         }
         
@@ -1129,22 +1184,34 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         if (level != null && !level.isClientSide()) {
             try {
                 GridHelper.onFirstTick(this, blockEntity -> {
-                    if (shouldReconnect || !nodeCreated) {
+                    // Usa il metodo di utilità per l'inizializzazione sicura
+                    if (shouldReconnect || !nodeCreated || !isNodeValid()) {
+                        LOGGER.debug("Bridge: Attempting safe node initialization in clearRemoved");
+                        boolean success = safeInitializeNode();
+                        if (success) {
+                            shouldReconnect = false;
+                            LOGGER.debug("Bridge: Node initialization successful in clearRemoved");
+                        } else {
+                            shouldReconnect = true;
+                            LOGGER.warn("Bridge: Node initialization failed in clearRemoved, will retry");
+                        }
+                    } else {
+                        // Il nodo è già valido, esegui solo gli aggiornamenti necessari
                         try {
-                            mainNode.create(level, worldPosition);
-                            nodeCreated = true;
                             forceNeighborUpdates();
                             updateConnectedState();
                             ICraftingProvider.requestUpdate(mainNode);
-                            shouldReconnect = false;
+                            IStorageProvider.requestUpdate(mainNode);
+                            LOGGER.debug("Bridge: Node already valid, performed updates in clearRemoved");
                         } catch (Exception e) {
-                            LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                            shouldReconnect = true;
+                            LOGGER.error("Bridge: Failed to update existing valid node in clearRemoved: {}", e.getMessage());
                         }
                     }
                 });
             } catch (Exception e) {
-                LOGGER.error("Failed to schedule AE2 node initialization: {}", e.getMessage());
+                LOGGER.error("Bridge: Failed to schedule AE2 node initialization in clearRemoved: {}", e.getMessage());
+                // Imposta il flag per tentare la riconnessione al prossimo tick
+                shouldReconnect = true;
             }
         }
     }
