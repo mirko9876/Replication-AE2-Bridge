@@ -291,15 +291,27 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
         // Initialize the AE2 node if it hasn't been done
         if (!nodeCreated && level != null && !level.isClientSide()) {
-            try {
-                mainNode.create(level, worldPosition);
+            // Verifica se il nodo è già stato inizializzato tramite le API di AE2
+            boolean nodeAlreadyExists = mainNode.getNode() != null;
+            
+            if (!nodeAlreadyExists) {
+                try {
+                    mainNode.create(level, worldPosition);
+                    nodeCreated = true;
+                    forceNeighborUpdates();
+                    updateConnectedState();
+                    ICraftingProvider.requestUpdate(mainNode);
+                } catch (Exception e) {
+                    LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
+                    shouldReconnect = true;
+                }
+            } else {
+                // Il nodo esiste già, aggiorna solo lo stato locale
                 nodeCreated = true;
                 forceNeighborUpdates();
                 updateConnectedState();
                 ICraftingProvider.requestUpdate(mainNode);
-            } catch (Exception e) {
-                LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                shouldReconnect = true;
+                LOGGER.debug("Bridge: AE2 node already exists in onLoad, skipping creation");
             }
         }
         // Reset the flag if it was loaded but the node no longer exists
@@ -396,25 +408,37 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
 
             // If there is an AE2 connection and the node is not created, initialize the node
             if (hasAE2Connection && !nodeCreated) {
-                try {
-                    // Debug log disabled for production
-                    // LOGGER.debug("Bridge: Initializing AE2 node from handleNeighborChanged");
-                    mainNode.create(level, worldPosition);
+                // Verifica se il nodo è già stato inizializzato tramite le API di AE2
+                boolean nodeAlreadyExists = mainNode.getNode() != null;
+                
+                if (!nodeAlreadyExists) {
+                    try {
+                        // Debug log disabled for production
+                        // LOGGER.debug("Bridge: Initializing AE2 node from handleNeighborChanged");
+                        mainNode.create(level, worldPosition);
+                        nodeCreated = true;
+
+                        // Notify adjacent blocks
+                        forceNeighborUpdates();
+
+                        // Update the connection state visually
+                        updateConnectedState();
+
+                        // Force a pattern update
+                        // Debug log disabled for production
+                        // LOGGER.debug("Bridge: Requesting AE2 pattern update");
+                        ICraftingProvider.requestUpdate(mainNode);
+                    }catch (Exception e) {
+                        LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
+                        shouldReconnect = true;
+                    }
+                } else {
+                    // Il nodo esiste già, aggiorna solo lo stato locale
                     nodeCreated = true;
-
-                    // Notify adjacent blocks
                     forceNeighborUpdates();
-
-                    // Update the connection state visually
                     updateConnectedState();
-
-                    // Force a pattern update
-                    // Debug log disabled for production
-                    // LOGGER.debug("Bridge: Requesting AE2 pattern update");
                     ICraftingProvider.requestUpdate(mainNode);
-                }catch (Exception e) {
-                    LOGGER.error("Failed to initialize AE2 node: {}", e.getMessage());
-                    shouldReconnect = true;
+                    LOGGER.debug("Bridge: AE2 node already exists in handleNeighborChanged, skipping creation");
                 }
             }
             // If the node exists, update only adjacent blocks
@@ -838,7 +862,13 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
     // =================== Utility methods ===================
 
     public boolean isActive() {
-        return mainNode.isActive();
+        try {
+            return mainNode.isActive() && mainNode.getNode() != null;
+        } catch (Exception e) {
+            // Se c'è un errore nell'accesso al nodo, considera il bridge come non attivo
+            LOGGER.debug("Bridge: Error checking node activity: {}", e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -850,13 +880,24 @@ public class RepAE2BridgeBlockEntity extends ReplicationMachine<RepAE2BridgeBloc
         if (level != null && !level.isClientSide()) {
             try {
                 GridHelper.onFirstTick(this, blockEntity -> {
-                    if (shouldReconnect || !nodeCreated) {
+                    // Verifica se il nodo è già stato inizializzato tramite le API di AE2
+                    boolean nodeAlreadyExists = mainNode.getNode() != null;
+                    
+                    if ((shouldReconnect || !nodeCreated) && !nodeAlreadyExists) {
                         mainNode.create(level, worldPosition);
                         nodeCreated = true;
                         forceNeighborUpdates();
                         updateConnectedState();
                         ICraftingProvider.requestUpdate(mainNode);
                         shouldReconnect = false;
+                    } else if (nodeAlreadyExists) {
+                        // Il nodo esiste già, aggiorna solo lo stato locale
+                        nodeCreated = true;
+                        shouldReconnect = false;
+                        forceNeighborUpdates();
+                        updateConnectedState();
+                        ICraftingProvider.requestUpdate(mainNode);
+                        LOGGER.debug("Bridge: AE2 node already exists, skipping creation");
                     }
                 });
             } catch (Exception e) {
